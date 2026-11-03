@@ -1,16 +1,18 @@
-# Read-only activity panel
+# UI
 
-`ActivityPanel` is a standalone Pi TUI component with three tabs:
+## Activity panel
 
-- **Overview:** labelled safety modes, observation coverage, final blocks and reported errors, the three most frequent fixed block-reason categories, turn/session counts, actual guard wait, then secondary speed measurements. All remaining reason categories are in Diagnostics. No commands, paths, tool names, provider IDs or explanations appear here.
-- **History:** newest-first retained entries, selectable by line, with Enter expansion. Expanded entries show only already-sanitized previews, explanations, fixed reasons, provenance, verdict routes, classifier signals and timing receipts. Unknown execution is labelled, not inferred from admission or an execution-end event.
-- **Diagnostics:** the detailed dashboard metrics, including classifier input counts, latency counts and samples, model receipts, judge outcomes and retries, summaries, approvals, turn telemetry and all nine independent heads. History previews belong to History, not Diagnostics.
+`/activity` opens a read-only panel. The panel cannot change safety settings.
 
-This panel never changes safety policy. Sanitized histories remain private session data, not publication-safe examples.
+| Tab | Content |
+| --- | --- |
+| Overview | Active modes, coverage, final blocks, reported errors, the three most frequent block reasons, counts, guard wait and speed. No commands, paths, tool names, provider IDs or explanations. |
+| History | Recent calls, newest first. Press Enter to expand a call. Details are sanitized previews, explanations, reasons, sources, routes, classifier labels and timings. |
+| Diagnostics | All metrics: classifier inputs, latency, model records, judge outcomes and retries, summaries, approvals, turn telemetry and all nine labels. |
 
-## Synthetic mockup
+Sanitized History remains private session data. Do not publish it.
 
-Illustrative synthetic values only. This is not a real activity capture.
+This mockup uses invented values:
 
 ```text
 ╭ Activity v1.0.0 ───────────────────────────────────────────────────────────╮
@@ -34,9 +36,10 @@ Illustrative synthetic values only. This is not a real activity capture.
 ╰───────────────────────────────────────────────────────────────────────────╯
 ```
 
-A compact History entry is `> + [agent] bash blocked`. Enter changes `+` to `−` and reveals retained detail. Wide characters, emoji and combining characters wrap using Pi's terminal-column primitives. Wrapped detail can be traversed one line at a time; it is not silently clipped to a single preview row. Retention truncation and older-entry omissions are disclosed separately.
+A History entry looks like `> + [agent] bash blocked`. Enter changes `+` to `−` and
+shows the details. The panel marks truncated data and omitted older entries.
 
-## Controls
+### Controls
 
 | Keys                         | Action                                                                  |
 | ---------------------------- | ----------------------------------------------------------------------- |
@@ -49,163 +52,151 @@ A compact History entry is `> + [agent] bash blocked`. Enter changes `+` to `−
 | Enter                        | Expand / collapse the selected History entry only                       |
 | `q`, Esc, Ctrl+C             | Close                                                                   |
 
-Enter does not dismiss Overview or Diagnostics. Each tab restores its own scroll position. A tab change clears an unfinished `g` prefix. New observations do not steal a retained History selection or push it offscreen. Height-only resizing also keeps the selection visible. Expansion state is discarded when its entries are no longer retained.
+Each tab keeps its scroll position. New entries do not move your History selection.
 
-## Layout and theme
+### Size
 
-The complete card, including borders, title, tabs and footer, is bounded by `floor(tui.terminal.rows * 0.8)`. Only the body scrolls. There is no minimum size that can exceed this budget.
+The panel uses at most 80% of the terminal height. Only the body scrolls. Short
+terminals get a compact header and footer. If only one row fits, the panel shows the
+close hint. The keys work at every size.
 
-At normal sizes the card has rounded borders and fixed title, tabs and hints. Short terminals use a compact unbordered header and footer; if only one row fits, close hints take priority. A zero-row budget or zero width returns no lines. A one-column terminal keeps a one-column close hint. Full content and tab labels necessarily need more space, but the same keys still work.
+### How to read the values
 
-Resizing anchors the top visible logical row where possible, then clamps the viewport to its new bounds. ANSI-aware wrapping, truncation and padding keep every line within the supplied width. `invalidate()` regenerates theme-dependent content without resetting navigation. Styles use Pi's semantic colors and bold headings. The selected history header uses the active-row background when supplied by the theme; blocks and errors have distinct highlighting. Incomplete coverage is not shown as a green all-safe badge.
-
-## Interpretation
-
-- Coverage describes observations, not a guarantee that all activity was safe. Unresolved receipts and dropped private-log counts remain visible.
-- Final blocks differ from prefilter reviews. Reported errors do not by themselves prove tool execution.
-- Actual guard wait is monotonic elapsed time with at least one Pi tool-admission handler pending, counted once across overlaps. It includes classifier, foreground summary, judge and approval work inside that admission interval. Tool execution, ordinary model thinking and unguarded user-shell execution are excluded. Durations use milliseconds, seconds or minutes as appropriate. Missing or unavailable measurements display **unavailable**; partial measurements are labelled **partial**. The UI never substitutes summed gate, judge or classifier times for this value.
-- Median and p95 cover bounded retained samples. Mean and count cover all observed measurements.
-- Judge and classifier work overlaps gate measurements. Their totals are not additive guard wait.
-- Provider request counts distinguish exact hooked receipts from observed lower bounds. Configured models and actual request models are separate.
-- The nine heads are independent. Selected-label support is not accuracy or calibrated confidence. Raw predictions and applied labels remain distinct, including unknown legacy labels. Turning the classifier off does not hide its retained Diagnostics metrics.
+- **Coverage** describes what Activity observed. It does not mean that all activity
+  was safe. Incomplete coverage is never a green badge.
+- **Final blocks** are calls that did not run. A call that goes to the judge is not
+  a block until the final decision.
+- **Reported errors** do not prove that a tool ran.
+- **Guard wait** is the time that the agent waited for Activity's tool checks.
+  Overlapping checks count once. It includes the classifier, foreground summaries,
+  the judge and your approval. It does not include tool run time, model thinking or
+  your own shell commands. Missing values show **unavailable**. Partial values show
+  **partial**.
+- **Median and p95** use a limited set of samples. **Mean and count** use all
+  observed measurements.
+- **Judge and classifier times** overlap with guard wait. Do not add them.
+- **Provider request counts** are exact or lower bounds. The panel shows which. The
+  configured model and the actual request model are separate values.
+- **Labels** are independent. Selected-label support is not accuracy or calibrated
+  confidence.
+- **Diagnostics** keeps classifier metrics after you turn off the classifier.
 
 ## Guard banner
 
-The `activity-guard` live widget appears above the editor as soon as a guarded
-session starts. It shows the active mode(s) and one short explanation:
+The banner appears above the editor when a guard is active.
 
-- **Read-only:** local and remote changes are blocked.
-- **Remote-read-only:** remote changes are blocked; local changes may be allowed.
-- **Read-only + remote-read-only:** local and remote changes are blocked.
+| Active guard | Text meaning |
+| --- | --- |
+| Read-only | Local and remote changes are blocked. |
+| Remote-read-only | Remote changes are blocked. Local changes may be allowed. |
+| Both | Local and remote changes are blocked. |
 
-Toggles update the same widget, or remove it when both guards are off. It restores
-from the selected session branch on restart/resume; global guard floors still
-apply. `display.enabled: false` hides the banner without changing enforcement.
-Flags and startup slash commands use the same update path. Startup flags enable
-modes once; `/reload` and `/new` do not reapply them over subsequent user toggles.
+- The banner updates when you change a guard. It disappears when both guards are off.
+- On restart or resume, Activity restores guards from the selected session branch.
+  Guards set in the configuration file still apply.
+- `display.enabled: false` hides the banner. The guards still work.
+- Startup flags turn a guard on once. `/reload` and `/new` do not apply them again.
 
-The UI banner is separate from short, hidden chat-level LLM instructions. Pending
-changes coalesce until submission or the next queued/tool continuation. Once sent,
-instructions remain unchanged: later state changes append a new authoritative
-mode note, including OFF when earlier guard instructions must be revoked. Queued
-steering/follow-up submissions receive updates at a safe turn boundary. Compaction
-reannounces current guards if their instruction was summarized away. Guard changes
-never edit the system prompt or earlier messages, preserving the existing request
-prefix rather than guaranteeing provider cache hits. Cache warming pauses while
-the model-visible mode instruction is pending. Shutdown removes this widget only.
+Activity also tells the model when a guard changes:
+
+1. Activity collects changes until your next input or the next safe point in the turn.
+2. It sends one short hidden message. The message states the current modes,
+   including OFF when an earlier guard ends.
+3. After compaction, it sends the message again if the summary removed it.
+
+Activity does not edit the system prompt or earlier messages. Cache warming pauses
+while a message is pending.
 
 ## Activity row
 
-The passive `activity-status` widget sits below the editor. Counts stay on the left; the live judge clock and deadline are right-aligned. Elapsed time appears once. The reason is shortened before the clock or counters; exceptionally narrow widths can also shorten counters. The row renders at the host-supplied width on every resize.
+The row sits below the editor. Counts are on the left. The judge clock and deadline
+are on the right. On a narrow terminal, the row shortens the reason first. On a very
+narrow terminal, it can also shorten the counts.
 
-A dedicated widget is necessary because Pi's built-in status line collapses alignment spaces and concatenates other extensions' statuses before clipping. This implementation neither replaces the global footer nor clears other extensions' widgets/statuses. Activity-owned status keys are cleared while the widget is active. Non-TUI/limited-host fallback remains plain status text without a positional layout guarantee. Shutdown removes the activity widget.
+The row does not replace Pi's footer or the widgets of other extensions. Hosts
+without the TUI show plain status text.
 
-## Standard tool results
+## Tool results
 
-Activity does not register tool renderers or replace tool definitions. Built-in
-and custom tools retain their own call/result rendering, including Pi's standard
-pending edit preview and successful diff layout.
+Activity does not change how tools render. Execution errors and successful results
+stay unchanged.
 
-- Activity refusal: the native error-result text says **Blocked — tool was not
-  run.** A separate Activity message preserves the full reason and model guidance.
-- Execution errors and successful results are unchanged; Activity does not label,
-  reformat or otherwise rewrite them.
+When Activity blocks a call:
 
-The native block notice is ordinary result text. Pi controls its error color and
-background. Custom tools retain control of their own rendering. Pi may show a
-proposed edit preview even when admission is later blocked; a preview is not
-evidence that an edit executed. Stored results retain their existing text on replay.
+- The tool result says **Blocked — tool was not run.**
+- A separate message shows **↑ 🛡️ Blocked (source): reason**, then **Model guidance:**.
+  The model gets the same text. Pi keeps the message for resume.
+- Nested calls and cancelled or stale calls get the full reason in the tool result,
+  without a separate message.
 
-The Activity-owned `activity-blocked` message uses Pi's `toolErrorBg` as one
-coherent block; it does not intercept tool rendering. The block starts with
-**↑ 🛡️ Blocked (source): reason**, in the error color, without repeating the
-native execution notice. A blank line separates the reason from a muted
-**Model guidance:** section. All guidance remains visible to the operator and
-unchanged in model context. Call identity appears in the UI when expanded.
-Pi delivers these messages after all tool results in the turn, before model
-continuation, and persists them for resume. Nested callers and cancelled/stale
-work keep the full native reason instead; they do not enqueue a separate message.
-The extension factory's optional `"native"` third argument is retained for isolated
-policy tests and comparison previews; it is not a configuration setting.
+Pi can show an edit preview before Activity blocks the edit. A preview does not
+prove that the edit ran.
 
 ## Approval
 
-Ordinary auto-mode `ask_user` decisions and eligible technical review failures open
-a compact inline dialog built from Pi's UI controls, not an overlay or the read-only
-activity panel. Judge `block` returns immediately without UI. All refusals retain
-the short original reason; user Block also explicitly records that the user declined
-and prohibits an unchanged retry. Approval timeout means unavailable approval, not
-human denial: the agent receives exactly the same refusal as immediate judge
-`block`: **Blocked — tool was not run.**, followed by the reason and short steering to prefer a
-safe reason-resolving alternative or other unblocked work while the user is away.
-It forbids guard bypasses and unchanged retries and asks for help only when no safe
-path remains, without timeout or 30-second steering. The UI still shows its 30-second inactivity window
-and telemetry records `timeout`. Cancellation and missing UI are not human denial;
-stale-call, guard and technical-stop diagnostics remain visible.
-Only **Block** and **Allow** are selectable. Complete tool/cwd, review reason and
-arguments are shown directly in a paged evidence area, with the page count and
-key hints below the choices. The dialog uses at most 18 rows. Everything stays
-in memory; no argument file or reusable permission is created. Backslashes,
-terminal commands and invisible direction controls are escaped as inert text,
-not executed or silently stripped. Invisible side padding keeps evidence inset
-without vertical borders and preserves leading/trailing spaces.
-Block is initially selected; paging preserves the selected decision.
+Activity opens a dialog in these cases:
 
-- j/k or Up/Down: select Allow/Block.
-- h/l or Left/Right: previous/next evidence page; Home/End: first/last page.
-- Enter: confirm the selected choice; Esc/Ctrl+C: cancel.
-- Pi's configured selection and cancellation bindings apply; hints reflect them.
+- The judge answers `ask_user`.
+- The judge fails for a technical reason, such as a timeout.
 
-Approval dialogs are serialized per session. Queue waiting is bounded by 30
-seconds. Once visible, an approval gets a fresh 30-second **inactivity** window.
-Each real keypress or paste delivered to the focused dialog resets it, including
-paging, selection and otherwise ignored printable input. Redraws, resize events,
-terminal reports and key-release packets do not reset it. Pi-owned global
-shortcuts, such as fullscreen Page Up/Down, are intercepted before dialog input
-and do not reset the timer. There is no total-time limit while actively interacting.
-Turn cancellation and session changes close the interaction. Unreadably small
-terminals cannot approve. Allow admits only
-the unchanged proposed call; it cannot waive hard guards or repair a later tool
-execution failure. Inputs are recursively frozen after Allow, so later admission
-handlers cannot silently change approved arguments. Extension argument transformers
-must run before Activity. This is not isolation from hostile same-process extensions.
-RPC/JSON/print sessions never open approval dialogs.
+Activity does not open a dialog in these cases. The call stays blocked.
 
-## Parent integration
+- The judge answers `block`.
+- A guard is active.
+- The judge configuration or the judge answer is invalid.
+- The turn is cancelled, or the call is stale.
+- The session is RPC, JSON or print.
 
-```typescript
-import { ActivityPanel } from "./panel.js";
+If the terminal is too small, the dialog says "Resize terminal to approve". You
+cannot approve until the dialog fits.
 
-await ctx.ui.custom<void>(
-  (tui, theme, _keys, done) => {
-    return new ActivityPanel(tui, theme, done, observationView, {
-      initialTab: "overview", // "history" or "diagnostics"
-      category: "all", // "sh", "files", "mcp"; History only
-      scope: "turn", // "session"; History only
-      modes: () => currentModes(),
-      droppedRecords: () => ({
-        actions: actionDrops(),
-        metadata: metadataDrops(),
-      }),
-    });
-  },
-  {
-    overlay: true,
-    overlayOptions: {
-      anchor: "center",
-      width: 110,
-      maxHeight: "80%",
-    },
-  },
-);
-```
+### What you see
 
-The host clamps the preferred width to the current terminal width, including after resizing. Avoid calculating a one-time numeric width from the terminal at opening. No fixed horizontal margins are imposed on tiny terminals.
+The dialog shows the tool, the working directory, the reason and all arguments, in
+pages. It uses at most 18 rows. **Block** is selected first.
 
-Use this path only in TUI mode. Keep `renderDashboard(view, { details: true })` and `renderHistory(view, options)` for RPC/notification fallback. `renderOverview`, `renderDiagnostics` and `renderHistoryRow` also expose stateless wrapped lines. Their `wrap: false` option returns logical lines for components that handle wrapping themselves.
+Activity shows backslashes, terminal commands and invisible direction controls as
+escaped text. It does not run or remove them. Activity keeps the data in memory. It
+creates no argument file and no reusable permission.
 
-`getView` must return an already-sanitized `ObservationView`, not raw runtime data. Guard wait comes from optional `telemetry.guardWait` and `selected.telemetry.guardWait` values of `{ wallMs, coverage: "complete" | "partial" | "unavailable" }`; `guardWaitPending` is an optional fixed numeric aggregate. Mode and drop-count callbacks are read afresh on render. The parent requests a render when observations change; the panel creates no timers or subscriptions.
+| Keys | Action |
+| --- | --- |
+| `j` / `k`, Up / Down | Select Allow or Block |
+| `h` / `l`, Left / Right | Previous / next page |
+| Home / End | First / last page |
+| Enter | Confirm |
+| Esc, Ctrl+C | Cancel |
 
-## Synthetic tests
+Your Pi selection and cancellation keys also apply. The hints show them.
 
-`activity/test/panel.test.mjs` exercises widths 0, 1, 8, 24, 40, 80 and 110; terminal rows 0 through 24 and 60; all tabs and navigation bindings; expansion, filters, Unicode wrapping, resizing, invalidation and retained privacy. `activity/test/display.test.mjs` covers stateless tab renderers and legacy text-view compatibility. `activity/test/host-ui.test.mjs` exercises the installed host's actual footer sanitizer and regular-mode overlay compositor with synthetic data, including resize and tiny-terminal geometry. `activity/test/ui-accounting.test.mjs` covers command routing, widget placement, cleanup and admission-token integration. `activity/test/guard-wait.test.mjs` covers overlapping waits, monotonic clocks, restoration, legacy data and interruptions. All are automatically discovered by `activity/test/run.sh`.
+### Timer
+
+- Dialogs open one at a time in each session. A call waits in the queue for at most
+  30 seconds.
+- An open dialog closes after 30 seconds without input.
+- Each key press or paste in the dialog resets the timer. Redraws, resizes, terminal
+  reports, key releases and Pi global shortcuts do not reset it.
+- There is no total limit while you use the dialog.
+- A cancelled turn or a session change closes the dialog.
+
+### Results
+
+| Result | Effect |
+| --- | --- |
+| Allow | The unchanged call runs. |
+| Block | The call does not run. The agent learns that you declined. It must not retry the same call. |
+| Timeout | The agent gets the same refusal as for a judge `block`. Telemetry records `timeout`. It does not count as your refusal. |
+| Cancel, no UI | The call does not run. It does not count as your refusal. |
+
+A refusal starts with **Blocked — tool was not run.** and the reason. It tells the
+agent to find a safe alternative or do other unblocked work. It also tells the agent
+not to bypass guards or retry the same call, and to ask you only if no safe path
+remains.
+
+Allow has these limits:
+
+- It applies to this exact call only. It cannot override a guard.
+- It cannot repair a tool failure after the call starts.
+- Activity freezes the arguments after Allow. Later handlers cannot change them.
+  Extensions that transform arguments must run before Activity.
+- It does not protect against a hostile extension in the same process.

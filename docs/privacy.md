@@ -1,82 +1,82 @@
 # Privacy
 
-## Session state is not optional logging
+## What the session file stores
 
-Activity appends branch-local Pi custom records needed to preserve authorization,
-tool outcomes, summaries and state. `log.enabled: false` and
-`reviewLog.enabled: false` disable the separate JSONL loggers, **not Pi session
-storage**. Pi also stores its normal conversation and tool events independently.
-Do not assume logging-off means no private session data exists.
+`log.enabled: false` and `reviewLog.enabled: false` turn off the JSONL logs only. Pi
+still stores its conversation and tool events. Activity adds these records to the
+session file for the branch:
 
-- `activity-state`: optional persisted modes.
-- `activity-observations`: optional bounded aggregate snapshots and sanitized
-  history previews/verdict explanations. No full MCP argument/result dumps or
-  reasoning traces. Redaction is best effort; these records remain private.
-- `activity-tool-outcome`: execution/blocked receipts with input hashes, not tool
-  output. Blocked means no execution; failed results may have partial effects.
-- `activity-human-answer`: validated human questionnaire text and provenance.
-- `activity.user-summary-cache`: completed validated rolling summaries, with
-  covered source identity/provenance and format/prompt versions.
+| Record | Content |
+| --- | --- |
+| `activity-state` | Optional: saved modes |
+| `activity-observations` | Optional: limited totals, sanitized previews and verdict explanations. No full MCP arguments or results. No reasoning traces. |
+| `activity-tool-outcome` | Ran or blocked, with input hashes. No tool output. |
+| `activity-human-answer` | Validated questionnaire text and its source |
+| `activity.user-summary-cache` | Validated summaries, with source identity and versions |
 
-Authorization receipts and summaries contain **private operational text**. They
-are not anonymized analytics or training material. Summaries preserve exact
-permission scopes, targets and conditions. Model identity is attribution only:
-changing a judge/summarizer model does not invalidate an otherwise exact-source
-summary. Changed source, branch/session, provenance or summary versions do.
-Pending work is never restored as completed. `session.persistModes` and
-`session.persistActivity` control their optional snapshots and summary cache,
-not the required authorization receipts. Keep Pi sessions private outside every Git worktree.
+- `session.persistModes` and `session.persistActivity` control the optional records
+  and the summary cache. They do not control the approval records that Activity needs.
+- These records contain private text. They are not anonymous. Summaries keep exact
+  permission scopes, targets and conditions.
+- A blocked call did not run. A failed result can have partial effects.
+- Redaction is best effort.
+- A changed source, branch, session or summary version invalidates a summary. A
+  changed model does not.
+- Pending work is never restored as completed.
+- Keep Pi sessions outside every Git worktree.
 
-Configured reviewer/summarizer calls send bounded task context to that model's
-provider/router. Activity never uploads logs. Review your provider's privacy
-terms separately; disabling logs does not make external review local.
+## What goes to the model provider
 
-## Opt-in private JSONL logs
+Judge and summary calls send limited task context to the provider or router of that
+model. Turning off logs does not stop this. Read your provider's privacy terms.
+Activity never uploads logs.
 
-Both loggers are off by default. Enabling `log.enabled` alone produces decision
-metadata in `redacted` mode; it does not enable action capture. These mode names
-are retained for compatibility:
+## JSONL logs
 
-- `redacted`: metadata-only action decisions.
-- `full`: **sanitized**, not raw, action capture. Includes Bash commands, paths,
-  evaluated custom/MCP arguments and available metadata. Never includes built-in
-  write/edit bodies. The genuine outer codemode wrapper is metadata-only;
-  evaluated nested actions are handled independently.
-- Review logs are metadata-only regardless of action-log mode.
+Both logs are off by default.
 
-Neither logger captures tool output, referenced file contents, raw user history,
-provider response text, or model reasoning traces. Histories keep bounded
-sanitized previews and verdict explanations, with explicit truncation, in memory
-and optional branch-local session snapshots. Logging and UI failures
-must not authorize an action or change routing.
+| Log | Setting | Content |
+| --- | --- | --- |
+| Action log | `log.enabled`, `log.mode: "redacted"` (default) | Decision metadata only |
+| Action log | `log.enabled`, `log.mode: "full"` | Also sanitized Bash commands, paths, evaluated custom and MCP arguments, and available metadata |
+| Review log | `reviewLog.enabled` | Metadata only, in every mode |
 
-All modes scrub before writing. Baseline scrubbing cannot be disabled. A private
-`redaction.literalsFile` adds exact strings from a JSON array of nonempty strings.
-Missing, malformed or unsafe configured dictionaries disable logging without a
-raw fallback. Scrubbing is best effort, **not anonymization of arbitrary business
-data**. Even scrubbed captures remain strictly private and must not be published.
+The logs never contain:
 
-Default files are under `~/.local/share/pi-activity/private/`, outside this package.
-Files use `0600`, directories `0700`; unsafe Git-worktree/symlink storage is refused.
-Use only paths outside every Git worktree, including ignored directories. Limits
-bound each file and queued data: oversized actions become marked metadata,
-oversized metadata/queue overflow is dropped. Drops are process-local telemetry,
-not guaranteed permanent accounting. Shared writers use a bounded directory
-lock; stop all relevant writers before manually removing an orphan lock.
+- tool output or file contents
+- raw user history
+- provider response text or model reasoning traces
+- the bodies of built-in file writes and edits
 
-## Audit and publication boundary
+The outer codemode wrapper logs metadata only. Activity logs the calls inside it
+separately. A logging or UI failure cannot allow a call or change its route.
 
-`node tools/audit_activity.mjs` locally reads review logs from the private default
-folder, or explicit files, and emits fixed-category aggregate counts. It never
-prints action samples, user text, call IDs or free-form reviewer reasons. Do not
-send private logs to a model provider. Tests invoke it only against synthetic
-fixtures in isolated homes; `npm test` never audits your real log folder.
+### Scrubbing
 
-Never copy real logs, runtime arguments, credentials, business data or sanitized
-captures into this worktree, its ignored directories, drafts or package artifacts.
-Only reviewed source, synthetic fixtures and reviewed aggregate metadata may be
-committed/released. Inspect exact staged files and package inventory; ignore rules
-are not protection. There is no automatic evaluation/training ingestion. Later
-exports need deliberate private sanitization and independent review outside this
-repository. Activity log cleanup does not authorize modifying Pi sessions, MCP
-records, provider data or research archives.
+- Activity scrubs all records before it writes them. You cannot turn this off.
+- `redaction.literalsFile` adds exact strings, from a JSON array of nonempty strings.
+- If this file is missing, malformed or unsafe, Activity turns off logging. It does
+  not write raw data.
+- Scrubbing is best effort. It does not anonymize business data. Do not publish
+  scrubbed logs.
+
+### Storage
+
+- The default folder is `~/.local/share/pi-activity/private/`.
+- Files have mode `0600`. Folders have mode `0700`.
+- Activity refuses a path inside a Git worktree, also if a symlink leads there.
+- A log path must be a regular file, not a symlink.
+- Size limits apply to each file and to queued data. An oversized action record
+  becomes marked metadata. Activity drops oversized metadata and queue overflow.
+- Drop counts last for the current process only.
+- Writers share a directory lock. Stop all writers before you remove a leftover lock.
+
+## Audit tool
+
+`node tools/audit_activity.mjs` reads review logs from the default folder, or from
+files that you name. It prints fixed-category counts only. It never prints action
+samples, user text, call IDs or reviewer reasons. `npm test` uses synthetic files and
+never reads your log folder.
+
+Do not send logs to a model provider. Do not copy logs, runtime arguments, credentials
+or business data into this repository.

@@ -1,17 +1,20 @@
 # Integration
 
-## Optional inherited policy context
+## Parent task context
 
-Activity works standalone. It requests context on **every `session_start`**, after
-extension factories register, using `activity:policy-context:request`. There is no
-required launcher, environment flag, CLI `Task:` format or legacy-hook fallback.
-No synchronous claim means ordinary **local** policy, without inherited grants or
-unseen parent restrictions. Activity cannot detect hidden delegation without a
-supplier or hint; an unmarked session has ordinary Pi user-message semantics.
+Activity works alone. A launcher extension can give Activity the rules of a parent
+task. A launcher is an extension that starts a child Pi session.
+
+On every `session_start`, Activity emits `activity:policy-context:request`. No
+launcher, environment flag or special task format is required.
+
+If no extension answers, Activity uses its normal local rules. It then treats user
+messages as messages from you. Activity cannot detect that another agent started
+this session unless an extension or `PI_SUBAGENT_TASK=1` says so.
 
 ## Contract
 
-Canonical exported types and consumer helpers: `activity/delegation.ts`.
+The types and helpers are in `activity/delegation.ts`.
 
 ```ts
 interface PolicyContextRequest {
@@ -36,27 +39,33 @@ interface DelegatedPolicyContext {
 }
 ```
 
-A supplier **synchronously claims** by calling `respond(promise)` during event
-emission, before awaiting any work. Abstain by **not calling `respond`**. Exactly
-one claim is permitted. Claimed null, error (even empty), rejection, malformed
-payload, unsupported version, cwd mismatch, invalid sources, conflicting/multiple
-claims or a **6-second** timeout fail closed: tools stop, not local fallback or an
-ordinary approval dialog. Asynchronous claims are too late and ignored. The last
-source must be `assignment` with text exactly equal to `task`. Both restriction
-booleans are required; false imposes nothing. True restrictions are inherited
-floors, not locally removable settings.
+To answer a request:
 
-The supplier attests that the task and sources genuinely belong to its launcher
-and to the requesting session/cwd. Activity validates structure, not the truth of
-an extension's assertions. A supplier must abstain unless it owns this launch's
-transport; a global hint alone is not ownership. Multiple cooperating suppliers
-must arrange that only the actual owner claims; there is no registry or priority.
+1. Call `respond(promise)` during the event, before any `await`. A later call has no
+   effect.
+2. To skip a request, do not call `respond`.
+3. Make the last source an `assignment`. Its text must equal `task`.
+4. Set both `restrictions` values. `false` adds no restriction. `true` turns the
+   guard on, and the session cannot turn it off.
 
-## Tiny independent adapter
+After a claim, Activity stops all tools if any of these occurs. It does not use
+local rules or open an approval dialog.
 
-This example uses an independent launcher adapter. `ownedLaunch` represents data
-obtained and bound by **your** trusted launcher; never extract supposed human
-consent from the child prompt or an arbitrary tool result.
+- The result has a null context or an `error`, even an empty one.
+- The promise rejects, or the result has no answer within 6 seconds.
+- The data is malformed, or has an unsupported version or invalid sources.
+- `cwd` does not match.
+- More than one extension claims the request.
+
+Activity validates the structure only. It cannot check that the content is true.
+Your extension must claim a request only if it started this session itself. A global
+hint does not prove this. If several launchers are installed, they must agree on
+which one claims. Activity has no registry or priority order.
+
+## Example
+
+`ownedLaunch` is data from your launcher. Never read human consent from the child
+prompt or from a tool result.
 
 ```ts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -80,101 +89,200 @@ export function registerAdapter(pi: ExtensionAPI, ownedLaunch?: {
 }
 ```
 
-Use structural copies of these types if you do not import the package. The event
-and payload are sufficient; no specific launcher extension is required.
-An adapter may own any suitable private transport. It must validate launch binding
-and limit input size and read time. Capture ownership before consuming a one-shot
-selector. Without its own transport, abstain even if another launcher sets
-`PI_SUBAGENT_TASK=1`.
+- You can copy these types instead of importing the package.
+- Your extension can use any private channel to its launcher. It must check that the
+  data belongs to this launch, and limit input size and read time.
+- If the channel can be read only once, record the claim before you read it.
+- If your extension has no channel of its own, do not claim. This also applies if
+  another launcher sets `PI_SUBAGENT_TASK=1`.
 
-## Consumer lifecycle and provenance
+## Consumer API
 
 `obtainDelegatedContext(pi, ctx, signal?)` returns
-`{context: DelegatedContextSnapshot | null, error?: string}`. Retain the copied,
-deeply frozen snapshot **only in the requesting runtime/session**. Supply a
-session-lifecycle signal; abort it on shutdown/replacement and discard old pending
-acquisitions. Activity's entry point does this before installation. No late result
-can install context after cancellation, session-manager/session/canonical-cwd
-change or timeout. `validateDelegatedContext(ctx, snapshot, cwd = ctx.cwd)` rechecks
-binding before fastpaths, each review/retry and verdict return. Invalid/stale
-supplied snapshots or dropped inherited guards produce a technical stop, not an
-authorization question. Never restore inherited snapshots from logs or summaries.
+`{context: DelegatedContextSnapshot | null, error?: string}`.
 
-A valid supplied snapshot marks local user-role messages as **agent tasks**, even
-without a flag. The legacy `PI_SUBAGENT_TASK=1` hint is captured once at extension
-activation and can mark assignments as agent-authored **without requiring a
-supplier**. Text beginning `Task:` alone never marks origin. Source helpers take
-explicit `origin: "human" | "agent"` (default `human`); callers of `judgeSafety`,
-`reviewContext`, summary preparation/restoration and `collectUserMessages` must
-pass their resolved origin when no supplied snapshot establishes it. Activity's
-entry point passes the same session origin throughout review and stale-call
-identity. Origin/provenance and prompt version are part of summary cache identity;
-restoration and post-generation source checks use that same origin. Confirmed
-gate-owned questionnaire receipts remain human input in either kind of session.
+1. Keep the frozen snapshot only in the session that asked for it.
+2. Pass a session signal. Abort it on shutdown or session change.
+3. Discard pending requests from the old session.
+4. Call `validateDelegatedContext(ctx, snapshot, cwd = ctx.cwd)` before each use.
 
-Inherited sources retain their roles: `user` is parent human input, `instruction`
-is instruction authority, and `assignment` is **not human consent**. Ordinary
-scoped work does not need a new human grant, but assignment claims cannot create
-explicit consent for sensitive effects. Nested launchers request the same generic
-hook, preserve upstream roles and guard floors, and label their own assignments
-as agent-authored. Hint-only nesting must not invent parent human consent.
+After a cancellation, session change, `cwd` change or timeout, a late result has no
+effect. An invalid snapshot or a dropped parent guard stops the tools. Activity does
+not ask you in this case. Never restore a snapshot from logs or summaries.
 
-## Trust and limits
+## Task origin
 
-Extensions share process/OS privileges; this is trusted-supplier provenance, not
-PKI, a permission framework or protection against hostile installed extensions.
-The snapshot goes to the policy judge, not the child agent prompt. It is launch-time
-only: no live parent revocations. Only text travels; parent images and upstream
-questionnaire receipts are not transported. Named upstream section updates retain
-their owning-session labels, but no global chronology/deduplication is imposed.
-After a one-shot transport is consumed, reload cannot recover it: restart the
-child task. Auto OFF still skips ordinary policy review while active guards
-remain binding. No claim of complete chain authority or OS isolation is made.
+A session is `human` or `agent`. This value controls how Activity reads user
+messages.
+
+- A valid snapshot marks local user messages as agent tasks.
+- `PI_SUBAGENT_TASK=1` marks them as agent tasks without an extension. Activity reads
+  this variable once at start.
+- Text that starts with `Task:` does not change the origin.
+- Confirmed questionnaire answers stay human input in both kinds of session.
+
+Source helpers take `origin: "human" | "agent"`. The default is `human`. Pass the
+resolved origin to `judgeSafety`, `reviewContext`, summary preparation and
+restoration, and `collectUserMessages` if no snapshot sets it.
+
+Activity's own entry point uses one origin for the whole session. The origin and the
+prompt version are part of the summary cache key.
+
+| Source role | Meaning |
+| --- | --- |
+| `user` | Input from the human in the parent session |
+| `instruction` | Instructions with authority |
+| `assignment` | The task from the parent agent. This is **not** human consent. |
+
+Ordinary work inside the assignment needs no new permission from you. An assignment
+cannot give consent for sensitive effects.
+
+A nested launcher sends the same request. It keeps the roles and guards of its parent,
+and labels its own assignments as agent-authored. With only `PI_SUBAGENT_TASK=1`, it
+must not invent human consent from a parent.
+
+## Limits
+
+- All extensions share one process and one OS user. Activity trusts the extension
+  that answers.
+- Activity gives the context to the judge, not to the child agent prompt.
+- The context is fixed at launch. If the parent changes a rule later, the child does
+  not see it.
+- Only text passes to the child. Parent images and questionnaire records do not.
+- Activity does not sort or deduplicate sources across sessions.
+- After a one-time channel is used, `/reload` cannot read it again. Restart the child
+  task.
+- With auto mode off, Activity skips its ordinary checks. Active guards still apply.
+- This is not an OS isolation layer or a permission framework.
 
 ## Managed acclass setup
 
-`activity/acclass-setup.ts` owns the v1.0.0 manifest and installer URLs. After
-consent, Activity validates the manifest and hashes its exact bytes. It then
-downloads the installer and checks this pinned SHA-256 before any write or run:
+`activity/acclass-setup.ts` holds the release URLs for acclass v1.0.0. In print and
+JSON sessions, Activity does not ask and downloads nothing.
 
-```text
-14a829520e50eea719fe1c11a1fb7cecbc6e5b4342933be79776bda9d65eef09
-```
+If you accept the install question:
 
-Both downloads require HTTPS without URL credentials, omit request credentials,
-allow at most five manual redirects and have a 30-second limit each. The manifest
-cap is 2 MiB; the installer cap is 1 MiB. A failure uses the LLM judge fallback.
+1. Activity downloads `release.json` (the manifest), validates it, and hashes its
+   exact bytes.
+2. Activity downloads the installer. It compares the installer with the pinned
+   SHA-256 hash before it writes or runs the file:
 
-The verified installer is written with mode `0600` in a private `0700` scratch
-directory. Activity runs `sh <file> --manifest <url> --manifest-sha256 <digest>`
-with the selected model and installation root. The installer rechecks the manifest
-pin and verifies asset sizes and hashes. The manifest is unsigned; this pin is not
-an independent publisher signature.
+   ```text
+   14a829520e50eea719fe1c11a1fb7cecbc6e5b4342933be79776bda9d65eef09
+   ```
 
-The child has a fixed environment with no provider credentials or loader hooks.
-Installation has a 15-minute limit. Cancellation sends SIGTERM to the process
-group, then SIGKILL after a two-second grace period. Activity removes its scratch
-directory after success or failure. A forced kill or crash can leave upstream
-`.lock` or `.staging-*` data. Inspect these outside this repository. Activity does
-not remove possibly active locks or silently repair corrupt installations.
+3. Activity writes the installer with mode `0600` into a new `0700` directory in the
+   installation root.
+4. Activity runs
+   `sh <file> --manifest <url> --manifest-sha256 <digest> --model <variant> --home <root>`.
+5. The installer checks the manifest hash, then the size and hash of each asset.
+6. Activity removes its directory and verifies the installation.
+
+If a step fails, the judge checks the calls that need review.
+
+The manifest has no signature. The hashes show that files did not change after
+Activity got the manifest over HTTPS. They do not prove who published the release.
+
+### Download limits
+
+| Limit | Value |
+| --- | --- |
+| Protocol | HTTPS only, for downloads and for each redirect |
+| Credentials | None in URLs. None in requests. |
+| Redirects | At most 5, each checked by Activity |
+| Time | 30 seconds for each download |
+| Manifest size | 2 MiB |
+| Installer size | 1 MiB |
+| Installation time | 15 minutes |
+
+### Installer and daemon environment
+
+The installer and the daemon get a fixed environment. It has no provider credentials
+and no loader hooks. The daemon gets only `HOME`, `PATH`, `LANG` and valid numeric
+values of `RAYON_NUM_THREADS` and `CANDLE_NUM_THREADS`.
+
+If you cancel, Activity sends SIGTERM to the installer process group. It sends
+SIGKILL after 2 seconds. A forced kill or a crash can leave `.lock`, `.staging-*` or
+`.activity-*` in `~/.acclass`. Activity does not remove them. If no installer is
+running, remove them by hand. A `.lock` stops new installations until you do this.
+
+### Check before each classification
+
+Before each classification, Activity:
+
+1. Checks that the installed version has no symlinks or special files, that the
+   current user owns it, and that group and others cannot write to it.
+2. Hashes every installed file and compares it with `INSTALLATION.json`.
+3. Compares the model hashes and sizes with the kept `release.json`.
+4. Resolves `current` to the real version path.
+
+On the first classification, Activity starts the daemon or reuses a compatible one.
+The socket is `~/.acclass/run/<version>-<variant>/ac.sock`, in a `0700` directory.
+
+If a check fails, the judge checks the call. Activity does not repair an installation
+and does not use unchecked files. It has no hash cache. It cannot protect against a
+malicious process of the same user that changes files during the check. Activity does
+not include models or engine binaries.
 
 ### Setup API
 
-- `AcclassSettings`, `DEFAULT_ACCLASS`: enabled by default, with the `q8` variant.
-- `ensureAcclass(settings, consent?, signal?)`: returns `{ status, config,
-  message? }`. Ready configurations use verified physical paths. Other statuses
-  (`disabled`, `declined`, `unavailable`) return `{ provider: "none" }` for judge
-  fallback. Missing consent means no download. Existing corrupt artifacts fail
-  before consent; they are not repaired.
-- `verifyInstallation(home?, variant?)`: rehashes the active installation and
-  checks its inventory, release, model and private socket location. Throws on
-  failure. `home` is the installation root (`~/.acclass` by default), not the
-  user's HOME. Recheck before provider use. There is no hash cache or protection
-  against malicious same-user races.
-- `createAcclassSetup({ home?, fetch?, spawn?, installerSha256? })`: offline test
-  seams only. The factory fixes the root; its verifier takes only the variant.
-  The hash override permits synthetic installer bytes. Production uses the pin.
+- `AcclassSettings`, `DEFAULT_ACCLASS`: enabled, with the `q8` variant.
+- `ensureAcclass(settings, consent?, signal?)` returns `{ status, config, message? }`.
+  - `ready`: `config` has verified real paths.
+  - `disabled`, `declined`, `unavailable`: `config` is `{ provider: "none" }`. Use the
+    judge.
+  - Without consent, nothing downloads. A corrupt installation fails before the
+    question.
+- `verifyInstallation(home?, variant?)` hashes the active installation and checks its
+  files, release, model and socket location. It throws on failure. `home` is the
+  installation root (default `~/.acclass`), not the user's HOME. Call it before each
+  use.
+- `createAcclassSetup({ home?, fetch?, spawn?, installerSha256? })` is for offline
+  tests only. Production code uses the pinned hash.
 
-The setup module does not edit Pi configuration or manage the daemon lifecycle.
-Its caller must honor fallback results and reverify before managed provider use.
-Tests never run the downloaded installer. Upstream acclass owns its internal tests.
+The setup module does not edit Pi configuration or manage the daemon. Its caller must
+use the judge after a failed setup, and verify the installation again before use.
+
+## Panel API
+
+Use `ActivityPanel` in TUI mode only:
+
+```typescript
+import { ActivityPanel } from "./panel.js";
+
+await ctx.ui.custom<void>(
+  (tui, theme, _keys, done) => {
+    return new ActivityPanel(tui, theme, done, observationView, {
+      initialTab: "overview", // "history" or "diagnostics"
+      category: "all", // "sh", "files", "mcp"; History only
+      scope: "turn", // "session"; History only
+      modes: () => currentModes(),
+      droppedRecords: () => ({
+        actions: actionDrops(),
+        metadata: metadataDrops(),
+      }),
+    });
+  },
+  {
+    overlay: true,
+    overlayOptions: {
+      anchor: "center",
+      width: 110,
+      maxHeight: "80%",
+    },
+  },
+);
+```
+
+- The host limits the width to the terminal width. Do not calculate a width once at
+  opening.
+- `getView` must return a sanitized `ObservationView`, not raw runtime data.
+- `telemetry.guardWait` and `selected.telemetry.guardWait` are optional:
+  `{ wallMs, coverage: "complete" | "partial" | "unavailable" }`. `guardWaitPending` is
+  an optional number.
+- The panel reads the mode and drop-count callbacks on each render. It has no timers
+  or subscriptions. The parent requests a render when observations change.
+- For RPC or notifications, use `renderDashboard(view, { details: true })` and
+  `renderHistory(view, options)`.
+- `renderOverview`, `renderDiagnostics` and `renderHistoryRow` return wrapped lines.
+  With `wrap: false`, they return unwrapped lines.

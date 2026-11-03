@@ -1,29 +1,26 @@
 # v1.0.0
 
-**Breaking clean release.** No backward compatibility or automatic migration is
-provided. Legacy classifier/path settings and judge prompt-file settings are
-rejected. Only the single configuration described in README is supported.
-Tested with Pi 1.5.0.
+This release replaces all earlier settings. Activity rejects old classifier, path and
+judge prompt-file settings. Activity has no automatic migration. Tested with Pi 1.5.0.
 
-- One global configuration: `<agent-dir>/config/activity.json`. The first
-  `session_start` exclusively creates a brief acclass-enabled Q8 file if absent.
-  Existing files stay unchanged; local overrides and project config are ignored.
-- Managed acclass accepts only `enabled` and `variant` (`q8`, `q5`, `fp32`). A
-  valid matching install needs no download. New installation requires one UI
-  confirmation before network/install work; no UI, decline or failure uses LLM
-  review, never fast allow. Corrupt installs are not silently repaired.
-  One setup offer per runtime; `/reload` can retry.
-- An omitted judge uses the current registered chat model. Explicit null disables
-  it. Additional judge guidance is one inline `auto.judgeInstructions` string.
-- After consent and manifest preflight, Activity downloads the upstream v1.0.0
-  installer over HTTPS and verifies its pinned SHA-256 before writing or running
-  it. The download cap is 1 MiB. The installer runs from private scratch storage
-  with a fixed child environment. It is not bundled in the package.
-  Each classification rechecks the installed inventory and hashes; daemon paths
-  are physical version pins with private version/variant sockets.
-- Policy, guards, private logging, UI and inherited-context integration remain
-  available. README owns the brief configuration reference; the schema owns
-  advanced settings.
+- **Configuration.** Activity reads one file: `<agent-dir>/config/activity.json`. At
+  first start, it creates the file with acclass on and the Q8 model. It does not
+  change an existing file. It ignores local and project configuration.
+- **acclass.** The settings are `enabled` and `variant` (`q8`, `q5`, `fp32`). A valid
+  installation needs no download. Otherwise Activity asks you once for each runtime.
+  It uses the network only if you accept. If you decline, the setup fails, or Pi has
+  no UI, the judge checks the calls. Activity does not repair a corrupt installation.
+  Run `/reload` to get the question again.
+- **Judge.** The judge uses your current chat model by default. `null` turns it off.
+  `auto.judgeInstructions` holds your additional guidance as one inline string.
+- **Install checks.** Activity downloads the v1.0.0 installer over HTTPS, with a 1 MiB
+  limit. It checks the pinned SHA-256 hash before it writes or runs the file. The
+  package does not include the installer.
+- **Runtime checks.** Activity checks all installed files and hashes before each
+  classification. Each version and model has its own socket path.
+
+Guards, logs, the UI and parent task context stay available. See the README and
+`activity.schema.json`.
 
 ## Release limits
 
@@ -31,7 +28,6 @@ Live downloads and real installation were not tested. Release endpoint
 availability was not checked. Offline fixtures verify setup, consent, integrity
 rejection and judge fallback only.
 
-The release manifest is unsigned. HTTPS-derived manifest and asset hashes are
-transport-based integrity checks, not independent signed publisher provenance.
-Classification is an optimization, not a safety guarantee. This is a public Pi
-Git package, not an npm release. Do not attach private runtime captures.
+The release manifest has no signature. The hashes check that files did not change.
+They do not prove who published the release. The classifier does not guarantee
+safety. Pi installs this package from Git, not from npm.

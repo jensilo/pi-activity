@@ -1,114 +1,148 @@
-# Events and observation limits
+# Events and limits
 
-Activity uses Pi extension hooks, not shell/process tracing. The gate returns a
-block from `tool_call`; display, persistence and telemetry are advisory and cannot
-replace enforcement.
+Activity uses Pi extension hooks. It does not trace shell commands or processes.
+Only `tool_call` can block a call. Display, storage and telemetry cannot block or
+allow a call.
 
-| Hook | Meaning |
+## Hooks
+
+| Hook | What Activity does |
 | --- | --- |
-| `session_start`, `session_tree` | Restore selected branch state, invalidate pending work |
-| `before_agent_start`, `agent_settled` | Open/close the observed activity window; append pending guard instructions before input |
-| `turn_end`, `session_compact` | Synchronize guard instructions before queued/tool continuations and after compaction |
-| `cache_warming_decision` | Pause cache warming while authoritative mode instructions are pending |
-| `tool_call` | Proposed complete evaluated call; enforce policy/review before execution |
-| `tool_execution_start` | Submission/start event, **not proof execute was entered** |
-| `tool_result` | Executed-tool result receipt; count execution, never retain output |
-| `tool_execution_end` | Completion event alone cannot distinguish rejection/cancellation |
-| `user_bash` | User submission, not confirmed shell execution and not activity-gated |
-| `message_end` | Match branch-local Bash result receipts without retaining output |
-| `session_shutdown` | Cancel pending consumers, checkpoint, stop supervised backend, flush opted-in logs |
+| `session_start`, `session_tree` | Restores the state of the selected branch. Cancels pending work. |
+| `before_agent_start`, `agent_settled` | Opens and closes the activity window. Adds pending guard messages before input. |
+| `turn_end`, `session_compact` | Sends guard messages before queued work and after compaction. |
+| `cache_warming_decision` | Pauses cache warming while a guard message is pending. |
+| `tool_call` | Checks the call before it runs. Can block it. |
+| `tool_execution_start` | Records the submission. This event does not prove that the tool ran. |
+| `tool_result` | Counts the run. Does not keep the output. |
+| `tool_execution_end` | Adds the duration. This event alone does not show a rejection or a cancellation. |
+| `user_bash` | Records your shell command. Does not prove that it ran. Guards and the judge do not check it. |
+| `message_end` | Matches shell results on this branch. Does not keep the output. |
+| `session_shutdown` | Cancels pending work, saves state, stops the daemon that Activity started, and flushes logs. |
 
-Nested tool calls are observed by their actual evaluated arguments and call IDs.
-Only a genuine built-in outer codemode wrapper is exempt; nested actions remain
-gated. Failed validation/lookup/start events cannot inflate execution counts.
-Duplicate receipts do not double-count; abandoned pending work is interrupted,
-not a fabricated success. Host-provided execute durations on `tool_execution_end`
-enrich confirmed results, including nested calls, without recounting execution or
-errors. Missing durations remain unknown; submission-to-result time is not a
-substitute. Late completions from a replaced session/tree are ignored.
+## Counts
 
-## Counts and history
+The footer shows `files:N(T) sh:N(T) MCP:N(T) blk:N(T)`. `N` is the current turn.
+`T` is the session total.
 
-Footer counts show current-turn values with session totals in parentheses:
-`files:N(T) sh:N(T) MCP:N(T) blk:N(T)`. Successful file writes/edits count as files;
-confirmed Bash and provenance-identified MCP execution include errors. Other
-custom tools remain visible in history without being relabelled as MCP. A final gate block counts
-once, regardless of local/reviewer/UI route. A prefilter review candidate is not
-itself a final block. User Bash result receipts can be synthesized by interceptors;
-without host execution provenance they remain "execution unknown" and do not
-pretend to prove a shell ran.
+| Count | Includes |
+| --- | --- |
+| `files` | Successful file writes and edits |
+| `sh` | Confirmed shell runs, including errors |
+| `MCP` | Confirmed runs of tools that Pi identifies as MCP, including errors |
+| `blk` | Final blocks. Each block counts once, from any route: local rules, judge or dialog. |
 
-`/activity` shows dashboard and telemetry; `/activity details` expands independent
-head statistics. `/bash-history` and `/mcp-history` accept `turn` or `complete`.
-Previews and verdict explanations are sanitized, explicitly truncated and stored
-in optional branch-local session snapshots. MCP arguments/results and reasoning
-traces are never history previews. Missing old
-snapshots, retention limits and interrupted observations can leave incomplete
-coverage. Do not infer historical zero from absent data.
+Other custom tools appear in History. Activity does not label them as MCP.
 
-## Decision notifications
+Counting rules:
 
-`pi.events` emits `activity:decision` once per final gated call. Version 1 contains
-`version`, loaded `packageVersion`, `callId`, fixed tool `category`, effective
-`modes`, final `verdict`, `route` and a fixed `reason` code. Optional `classifier`
-data projects input category/status, nine predictions/scores, applied heads and
-timings. Optional `judge` data reports outcomes, durations, attempts/retries,
-observed provider requests/dispatches and explicit fallback use.
+- Activity checks nested tool calls by their real arguments and call IDs.
+- The built-in outer codemode wrapper skips the check. Activity still checks the
+  calls inside it. A replacement tool with the same name does not skip the check.
+- A failed validation, lookup or start does not count as a run.
+- A duplicate result counts once.
+- Abandoned work shows as interrupted, not as a success.
+- A call that goes to the judge is not a block until the final decision.
+- A duration from `tool_execution_end` does not change the counts. A missing
+  duration stays unknown.
+- Activity ignores late results from a replaced session or tree.
+- A user shell result without confirmation from Pi shows as "execution unknown".
 
-No arguments, outputs, user text, free-form explanations or reasoning traces are
-emitted. Unknown reasons are `unknown`, not arbitrary text. Events are
-observational, never approval tokens or a way to waive hard guards. Consumers
-must tolerate unknown future fields/versions. The TypeScript projection is
+## History
+
+`/bash-history` and `/mcp-history` accept `turn` or `complete`.
+
+- Activity sanitizes and truncates previews and explanations. It marks each
+  truncation.
+- It keeps them in memory and in optional session snapshots for the branch.
+- MCP arguments, MCP results and reasoning traces never appear in previews.
+- Old snapshots, retention limits and interrupted observations can leave gaps.
+  Missing data does not mean zero.
+
+## `activity:decision`
+
+`pi.events` emits this event once for each final decision on a checked call.
+
+| Field | Content |
+| --- | --- |
+| `version` | `1` |
+| `packageVersion` | Loaded Activity version |
+| `callId` | Tool call ID |
+| `category` | Fixed tool category |
+| `modes` | Effective modes |
+| `verdict` | `allow` or `block` |
+| `route` | How Activity reached the verdict |
+| `reason` | Fixed reason code. An unknown reason is `unknown`. |
+| `classifier` | Optional: input type, status, probabilities, predictions, applied labels, timings |
+| `judge` | Optional: outcome, duration, attempts, retries, observed requests and dispatches, fallback use |
+
+The event has no arguments, outputs, user text, free-form explanations or reasoning
+traces. The event does not approve a call and cannot override a guard. Consumers
+must accept unknown future fields and versions. The TypeScript type is
 `DecisionObservation` in `activity/observations.ts`.
 
-## State broadcast
-
-`pi.events` emits `activity:state`:
+## `activity:state`
 
 ```ts
 { readOnly: boolean, auto: boolean, guards: { remoteReadOnly: boolean } }
 ```
 
-These are effective modes, including global guard floors. Other extensions may
-consume them; Activity does not certify that a child/backend inherits protection.
-Delegation receives constrained review under active guards, just like other
-custom calls. A cooperating subagent extension must forward `--read-only` and
-`--remote-read-only` as appropriate and prevent call-level guard opt-outs.
-`herdr:blocked` is an optional blocked-state notification for UI consumers, not an
-authorization API.
+These are the effective modes, including guards set in the configuration file.
 
-## Classifier and model telemetry
+- Activity does not prove that a child process or backend has the same protection.
+- Under an active guard, the judge checks delegation calls with guard constraints,
+  like other custom calls.
+- A subagent extension must forward `--read-only` and `--remote-read-only`. It must
+  also prevent per-call guard opt-outs.
+- `herdr:blocked` is an optional notification for UI consumers. It does not
+  authorize anything.
 
-Classifier results distinguish disabled/skipped/failed/complete evidence. The
-nine independent heads are `local_state_change`, `outbound`, `egress`,
-`remote_state_change`, `delegated_execution`, `exposes_secrets`, `destructive`,
-`host_control_change`, and `fetched_or_generated_execution`. Raw predictions and
-applied policy signals are separate. Selected-label support is not calibrated
-confidence or measured accuracy. Negative custom/MCP predictions are not proof
-that a backend is safe; metadata remains unverified and effects incomplete.
+## Classifier telemetry
 
-Judge starts, retry/fallback work, observed request evidence, response outcomes,
-summary generation/cache hits and approval choices are distinct quantities.
-Configured model identity and observed physical dispatch identity need not match
-for virtual models. Dispatch/payload hooks do not prove a wire request; stream-start
-or HTTP-response evidence is observed only where adapters expose it. Adapter-owned
-retries/routing can add traffic without universal hooks. Unknown counts/costs are
-not zero. Timing samples/percentiles are bounded observations, not exhaustive
-performance guarantees.
+The classifier status is disabled, skipped, failed or complete. The nine labels are
+independent:
 
-An Allow choice counts as an effective override only if the action is still
-admitted after cancellation/mode/session-generation checks and its arguments still
-match the complete evidence shown. A tool failure after Allow is an execution
-error, not a second gate denial. Summaries are generated evidence, never
-new human consent. Questionnaire receipts require a trusted source, exact pending
-input and valid submitted answers.
+`local_state_change`, `outbound`, `egress`, `remote_state_change`,
+`delegated_execution`, `exposes_secrets`, `destructive`, `host_control_change`,
+`fetched_or_generated_execution`.
+
+- Raw predictions and applied labels are separate values.
+- Selected-label support is not calibrated confidence or measured accuracy.
+- A negative prediction for a custom or MCP tool does not prove that the backend is
+  safe. Activity does not verify tool metadata.
+
+## Judge telemetry
+
+Activity counts these separately: judge starts, retries, fallback use, observed
+requests, answers, generated summaries, summary cache hits and approval choices.
+
+- The configured model and the model that gets the request can differ for virtual
+  models.
+- A dispatch or payload hook does not prove that a request reached the network.
+- Activity counts a stream start or HTTP response only if the adapter exposes it.
+- Adapters can retry and route requests without a hook. This can add traffic.
+- Unknown counts and costs show as unknown, not as zero.
+- Timing samples are limited. They do not guarantee performance.
+
+## Approval counts
+
+An Allow counts as an override only if both conditions are true:
+
+1. The call is still valid after the checks for cancellation, mode and session.
+2. The arguments still match what the dialog showed.
+
+A tool failure after Allow is an execution error, not a second block. A summary is
+generated text. It never counts as your consent. A questionnaire record needs a
+trusted source, the exact pending input and valid answers.
 
 ## Limits
 
-There is no OS sandbox, backend attestation or validated real-MCP accuracy claim.
-A hostile extension runs in the same trusted Pi process. Pi does not expose every
-independently cancelled nested signal to every hook; host execution cancellation
-still applies. Tool outputs and model reasoning traces are deliberately not
-recorded. Review/summary calls can transmit private task context to their selected
-provider. See [privacy](privacy.md) and the
-[configuration reference](../README.md#configuration-reference).
+- There is no OS sandbox. Activity cannot prove what a backend does.
+- Accuracy on real MCP tools is not validated.
+- A hostile extension runs in the same Pi process as Activity.
+- Pi does not expose every cancelled nested signal to every hook. Pi still applies
+  its own cancellation when a tool runs.
+- Activity does not record tool outputs or model reasoning traces.
+- Judge and summary calls can send private task context to the model provider.
+
+See [privacy](privacy.md) and [configuration](../README.md#configuration).
