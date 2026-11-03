@@ -313,7 +313,7 @@ for (const [name, fetch] of [
 
 test("pinned installer hash mismatch never writes or spawns", async (t) => {
   const f = await fixture(t);
-  assert.equal(ACCLASS_INSTALLER_SHA256, "14a829520e50eea719fe1c11a1fb7cecbc6e5b4342933be79776bda9d65eef09");
+  assert.equal(ACCLASS_INSTALLER_SHA256, "b7e2171e0545dcdb32d0b7c71041e7758cfeb9cfcdd6178b36f911dc0e087976");
   const result = await f.setup({ installerSha256: undefined }).ensureAcclass(enabled(), f.consent);
   unavailable(result);
   assert.match(result.message, /installer SHA-256 mismatch/);

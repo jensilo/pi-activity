@@ -168,7 +168,7 @@ If you accept the install question:
    SHA-256 hash before it writes or runs the file:
 
    ```text
-   14a829520e50eea719fe1c11a1fb7cecbc6e5b4342933be79776bda9d65eef09
+   b7e2171e0545dcdb32d0b7c71041e7758cfeb9cfcdd6178b36f911dc0e087976
    ```
 
 3. Activity writes the installer with mode `0600` into a new `0700` directory in the
