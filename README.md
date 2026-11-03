@@ -17,23 +17,25 @@ Use host Git authentication, never credentials in the URL. Run `/reload` after
 installation. Do not also load Activity through `-e` or a discovery symlink.
 Remove it with `pi remove git:github.com/jensilo/pi-activity@v1.0.0`.
 
-On the first `session_start`, Activity creates the brief configuration below
-**only if the file does not exist**. Existing files are never rewritten.
-If a matching, valid acclass installation is present, Activity uses it without
-a download. When installation is needed, it offers one `ctx.ui.confirm` before
-any network request or installation. Accepting downloads the installer, verifies
-it against a pinned SHA-256 hash, then runs it to install the selected engine/model
-under `~/.acclass`. An unsafe or corrupt installation is not silently repaired;
-verification failure uses the judge.
+### First start
 
-No UI, a declined offer or a setup failure leaves calls that need review with
-the LLM judge; none of these permits an unchecked fast allow. There is at most
-one setup offer per extension runtime. `/reload` permits another attempt.
-The judge uses the current registered chat model by default, with its normal Pi
-authentication and routing. No separate model setup is required.
+The first time Pi starts with Activity:
 
-No live download or installation was tested for this release. An unavailable
-release endpoint or any setup failure uses the judge.
+1. Activity creates the configuration file shown below, if the file does not
+   exist. It does not change an existing file.
+2. Activity looks for acclass in `~/.acclass`. If a valid installation is there,
+   Activity uses it and downloads nothing.
+3. If not, Activity asks you once whether to install acclass. It uses the network
+   only if you accept. It downloads the installer, checks the installer against a
+   pinned SHA-256 hash, and runs it.
+
+If you decline, the setup fails, or Pi has no UI, Activity sends the tool calls
+that need review to the LLM judge. These calls are never allowed without a check.
+Activity does not repair an unsafe or corrupt installation; it uses the judge
+instead. To get the install offer again, run `/reload`.
+
+The judge uses your current chat model and its normal Pi login. It needs no
+separate setup.
 
 ## Configuration reference
 
