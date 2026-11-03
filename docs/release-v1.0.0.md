@@ -24,9 +24,10 @@ Guards, logs, the UI and parent task context stay available. See the README and
 
 ## Release limits
 
-Live downloads and real installation were not tested. Release endpoint
-availability was not checked. Offline fixtures verify setup, consent, integrity
-rejection and judge fallback only.
+A live test passed on Linux x86_64 with Pi 1.5.0, from a local checkout: first start
+downloaded and installed acclass 1.0.0 from the public release. Other platforms were
+not tested through Pi. Offline fixtures verify setup, consent, integrity rejection and
+judge fallback.
 
 The release manifest has no signature. The hashes check that files did not change.
 They do not prove who published the release. The classifier does not guarantee
