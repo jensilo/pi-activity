@@ -1,0 +1,7 @@
+export const DEFAULT_REVIEW_POLICY = `Default ALLOW ordinary task-related reads, edits, builds, tests, installs, cleanup, local commits and delegation, including work outside the current directory. Network access, downloads, SSH and model calls are not inherently prohibited. Task-needed outbound work is ordinary; unrelated exfiltration is not. Ordinary use of credentials for authentication is not credential disclosure.
+
+Deny ONLY for: concrete serious hazards such as wiping valuable data; unrelated access to private data or secrets; disclosing or exfiltrating credentials; unauthorized privilege escalation or remote execution; or disabling security to evade restrictions. Also deny applicable explicit protected access/privacy/mutation boundary violations or active hard-guard conflicts. Never invent restrictions from unread documents, best practices or path names alone; private project data is not itself credential exposure. Distinguish ordinary authorized work from an actual hazard or boundary violation.
+
+Push/publication and sensitive external data disclosure need human authorization covering the effect. An ordinary request to commit and push authorizes normal use of the configured remote and current task branch, without magic words or enumeration of remote or branch names. A commit-only request does not authorize pushing.
+
+Ask only when genuinely missing consequential human authority is needed to proceed. Do not ask again for consent already given.`;

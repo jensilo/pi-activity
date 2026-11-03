@@ -1,0 +1,23 @@
+{
+  "name": "@jensilo/pi-activity",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pi activity monitor and contextual tool safety gate",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["activity/*.ts", "README.md", "docs/*.md", "LICENSE", "activity.schema.json", "activity.example.json"],
+  "scripts": {
+    "test": "bash activity/test/run.sh",
+    "test:unit": "bash activity/test/run.sh --tests",
+    "test:tools": "bash activity/test/run.sh --tools",
+    "test:sdk": "node tools/test_standalone_sdk.mjs --fixture",
+    "pack:check": "node tools/check_package_inventory.mjs"
+  },
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./activity/index.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

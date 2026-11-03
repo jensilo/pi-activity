@@ -1,0 +1,4 @@
+node_modules/
+activity/test/.fixtures.*/
+*.tgz
+.DS_Store

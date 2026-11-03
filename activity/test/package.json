@@ -1,0 +1,6 @@
+{
+  "name": "activity-judge-suite",
+  "private": true,
+  "type": "module",
+  "description": "Standalone smoke tests for the activity extension's LLM security judges."
+}

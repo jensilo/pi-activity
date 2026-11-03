@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pi activity configuration",
+  "description": "Only global <agent-dir>/config/activity.json is read. Objects merge with built-in defaults; arrays replace. No local overrides or project configuration. Managed acclass defaults to enabled Q8; an omitted judge uses the current registered chat model.",
+  "type": "object",
+  "properties": {
+    "maxCommandChars": { "type": "integer", "minimum": 1, "default": 4000, "description": "Display limit only. Classifier and reviewer inputs are never clipped to this limit." },
+    "display": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean", "default": true, "description": "Display the activity footer. Does not affect tool gating or accounting." } }
+    },
+    "history": {
+      "type": "object",
+      "properties": { "maxEntries": { "type": "integer", "minimum": 0, "default": 200, "description": "Bound retained activity detail entries. Zero disables detail retention, not counters or gating." } }
+    },
+    "session": {
+      "type": "object",
+      "properties": {
+        "persistModes": { "type": "boolean", "default": true, "description": "Persist and restore session mode toggles. Global guards always remain authoritative." },
+        "persistActivity": { "type": "boolean", "default": true, "description": "Persist bounded activity accounting metadata in the Pi session. Private action logging is separately opt-in." }
+      }
+    },
+    "acclass": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Managed local classifier under ~/.acclass. Reuse a valid matching installation; new installation requires one UI confirmation before network work. Unsafe/corrupt installs are not silently repaired. If UI is unavailable, consent is declined or verification/setup fails, calls needing review use the LLM judge, never unchecked fast allow. Paths and daemon settings are internal.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true, "description": "Enable managed classification and the first-session setup offer. false uses judge review where needed, without installing or starting acclass." },
+        "variant": { "type": "string", "enum": ["q8", "q5", "fp32"], "default": "q8", "description": "Model variant for the managed, verified installation." }
+      }
+    },
+    "classifier": { "not": {}, "description": "Not a supported public configuration field." },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "readAllowlist": { "type": "array", "items": { "type": "string", "minLength": 1 }, "default": [], "description": "Explicit additional local read roots, independent of the classifier. Never secret-read or write exemptions. cwd/tmp/system reads use native scope policy." },
+        "trustedTools": { "type": "array", "items": { "type": "string", "minLength": 1 }, "default": [], "description": "Explicit exact tool names exempt from ordinary review. No default questionnaire trust. Does not authenticate arbitrary results as human consent or bypass known hard guards." },
+        "questionnaireSources": { "type": "array", "items": { "type": "string", "minLength": 1 }, "default": [], "description": "Explicit trusted questionnaire extension paths for structured, call-matched human submissions. Names and text alone are not consent." }
+      }
+    },
+    "guards": {
+      "type": "object",
+      "properties": {
+        "readOnly": { "type": "boolean", "default": false, "description": "Authoritative global read-only guard; session commands cannot switch this off. Established local/remote mutation cannot be waived. Unknown or predicted conflicts need constrained judge review; missing or inconclusive review fails closed without human override." },
+        "remoteReadOnly": { "type": "boolean", "default": false, "description": "Authoritative remote mutation guard, including remote delegation. Unknown or predicted conflicts need constrained judge review; established remote mutation cannot be waived. Missing or inconclusive review fails closed without human override." }
+      }
+    },
+    "auto": {
+      "type": "object",
+      "properties": {
+        "judgeInstructions": { "type": "string", "maxLength": 32768, "default": "", "description": "Inline trusted safety judge guidance, bounded at runtime to 32768 UTF-8 bytes. Reread per admission and bound to the reviewed call. No prompt files or project discovery. Cannot change active guards, consent provenance, verdict format or the no-workflow-gating remit; not an ACL for deterministic fast paths. Do not include secrets." },
+        "judgePromptFiles": { "not": {}, "description": "Not a supported configuration field. No prompt files are read." },
+        "judgeModel": { "$ref": "#/$defs/optionalModelRef", "description": "Omit to use ctx.model, the current registered chat model with normal Pi registry routing/authentication. A string selects an exact registered model. Explicit null disables the judge. Missing/unavailable review never automatically allows a call: eligible ordinary TUI calls may receive informed exact-call approval; active guards and noninteractive sessions fail closed." },
+        "summaryModel": { "$ref": "#/$defs/optionalModelRef", "description": "Optional summary target. Omit/null to follow the effective judge, including the current chat model when the judge is omitted. Failure uses complete raw user context within the review input limit." },
+        "judgeThinking": { "$ref": "#/$defs/thinking", "default": "off", "description": "Judge thinking level, separate from the exact model reference. Colons in model IDs are literal." },
+        "summaryThinking": { "$ref": "#/$defs/thinking", "description": "Summary thinking level. Omit to follow judgeThinking, even when summaryModel differs." },
+        "fallbackJudgeThinking": { "$ref": "#/$defs/thinking", "description": "Fallback thinking level. Omit to follow judgeThinking." },
+        "fallbackJudgeModel": { "$ref": "#/$defs/optionalModelRef", "default": null, "description": "No implicit escalation. Omit/null to disable. Only an explicit target enables fallback." }
+      }
+    },
+    "trustedTools": { "not": {}, "description": "Not a supported root field. Trust settings belong inside policy." },
+    "questionnaireSources": { "not": {}, "description": "Not a supported root field. Questionnaire trust belongs inside policy." },
+    "log": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false, "description": "Explicit opt-in only. All records are scrubbed before writing; baseline scrubbing cannot be disabled." },
+        "path": { "type": "string", "minLength": 1, "default": "~/.local/share/pi-activity/private/commands.jsonl", "description": "Strictly private external path outside all Git worktrees. Files are 0600; directories are 0700. No upload." },
+        "mode": { "type": "string", "enum": ["full", "redacted"], "default": "redacted", "description": "full captures sanitized Bash commands, MCP evaluated arguments/available metadata, and file paths, never file contents. redacted keeps decision metadata only. Neither mode retains raw archives, outputs, user history, or unrestricted reviewer/error explanations. Best-effort scrubbing does not anonymize arbitrary business data." },
+        "maxBytes": { "type": "integer", "minimum": 1024, "default": 8388608, "description": "Size cap per file. Oversized actions become marked metadata; oversized metadata is dropped." },
+        "maxFiles": { "type": "integer", "minimum": 0, "maximum": 100, "default": 7, "description": "Maximum rotated files in addition to one active file." }
+      }
+    },
+    "reviewLog": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false, "description": "Explicit opt-in metadata-only review logging. Always scrubbed; only machine outcome/reason codes, never unrestricted explanations." },
+        "path": { "type": "string", "minLength": 1, "default": "~/.local/share/pi-activity/private/reviews.jsonl", "description": "Strictly private external path outside all Git worktrees. Files are 0600; directories are 0700. No upload." },
+        "maxBytes": { "type": "integer", "minimum": 1024, "default": 2097152, "description": "Size cap per metadata-only file. No user history, tool arguments, outputs, file contents or reasoning." },
+        "maxFiles": { "type": "integer", "minimum": 0, "maximum": 100, "default": 7, "description": "Maximum rotated files in addition to one active file." }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "properties": {
+        "literalsFile": { "type": ["string", "null"], "minLength": 1, "pattern": "^(?:/|~/).+", "default": null, "description": "Optional absolute or ~/ path outside all Git repositories to a private JSON array of additional strings to mask. Unsafe/missing/malformed files prevent logging, never permit raw writes and do not change safety routing." }
+      }
+    }
+  },
+  "$defs": {
+    "optionalModelRef": { "type": ["string", "null"], "minLength": 1, "description": "Exact provider/model reference, including registered virtual models. Colons remain part of the model ID; thinking is configured separately. A bare registered model id must resolve unambiguously. Fully qualified refs avoid provider dependence. No model-policy installation or personal aliases are used." },
+    "thinking": { "type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }
+  }
+}
