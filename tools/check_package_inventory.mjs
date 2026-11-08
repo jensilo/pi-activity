@@ -21,7 +21,7 @@ const expected = [
   "activity/observations.ts", "activity/panel.ts", "activity/policy.ts", "activity/privacy.ts",
   "activity/read-classifier.ts", "activity/retry.ts", "activity/review-policy.ts",
   "activity/summary.ts", "activity/telemetry.ts", "activity/version.ts",
-  "docs/events.md", "docs/integration.md", "docs/privacy.md", "docs/release-v1.0.0.md",
+  "docs/events.md", "docs/integration.md", "docs/privacy.md", "docs/release-v1.0.0.md", "docs/release-v1.0.1.md",
   "docs/testing.md", "docs/ui.md",
 ].sort();
 const result = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {

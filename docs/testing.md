@@ -22,11 +22,12 @@ npm run pack:check   # exact npm pack dry-run inventory; no archive
 - Tests use no real logs, user MCP servers or live downloads.
 - The package excludes the installer, tests, tools, engines and models.
 
-If Pi is not under `npm root -g`, set `PI_GLOBAL` to its package root. For single tests
-and manual tools:
+`npm test` finds Pi in this order: `PI_GLOBAL`, the managed install in `~/.pi/agent`, then
+`npm root -g`. For single tests and manual tools, set `PI_GLOBAL` to the Pi package root.
+For a managed install:
 
 ```sh
-export PI_GLOBAL="${PI_GLOBAL:-$(npm root -g)/@earendil-works/pi-coding-agent}"
+export PI_GLOBAL="$HOME/.pi/agent/install/releases/$(cat ~/.pi/agent/install/current-version)/node_modules/@earendil-works/pi-coding-agent"
 JITI="$PI_GLOBAL/node_modules/.bin/jiti"
 if [ ! -x "$JITI" ]; then JITI="$(dirname "$(dirname "$PI_GLOBAL")")/.bin/jiti"; fi
 export NODE_PATH="$(dirname "$(dirname "$PI_GLOBAL")"):$PI_GLOBAL/node_modules${NODE_PATH:+:$NODE_PATH}"
@@ -60,8 +61,8 @@ checks one at a time. The tests do not change this.
 ## Optional real inference
 
 These commands need a compatible Q8 installation. They do not test the managed
-download. No live download/install validation has been performed for v1.0.0. Release
-endpoint availability was not checked.
+download. The managed download was tested live once, for v1.0.0 on Linux x86_64. See
+[the v1.0.0 release notes](release-v1.0.0.md).
 
 ```sh
 "$JITI" tools/test_activity_engine_e2e.mjs --live

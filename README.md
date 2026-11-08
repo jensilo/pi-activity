@@ -10,13 +10,13 @@ It is a guardrail. It is not an OS sandbox, and it does not guarantee safety.
 From npm:
 
 ```sh
-pi install npm:@jensilo/pi-activity@1.0.0
+pi install npm:@jensilo/pi-activity@1.0.1
 ```
 
 Or from GitHub:
 
 ```sh
-pi install git:github.com/jensilo/pi-activity@v1.0.0
+pi install git:github.com/jensilo/pi-activity@v1.0.1
 ```
 
 Then run `/reload` in Pi. Tested with Pi 1.5.0.
@@ -25,8 +25,8 @@ Then run `/reload` in Pi. Tested with Pi 1.5.0.
 - Install one copy only. Do not also load Activity with `-e` or a symlink.
 - For a Git install, use your normal Git login. Do not put credentials in the URL.
 
-To remove it, use the same source: `pi remove npm:@jensilo/pi-activity@1.0.0` or
-`pi remove git:github.com/jensilo/pi-activity@v1.0.0`.
+To remove it, use the same source: `pi remove npm:@jensilo/pi-activity@1.0.1` or
+`pi remove git:github.com/jensilo/pi-activity@v1.0.1`.
 
 ## First start
 

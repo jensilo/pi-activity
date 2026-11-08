@@ -10,7 +10,15 @@ if [[ $# -gt 1 || ! "$MODE" =~ ^--(all|tests|tools)$ ]]; then
   exit 1
 fi
 umask 077  # Fixtures must match the private modes that setup requires.
-export PI_GLOBAL="${PI_GLOBAL:-$(npm root -g)/@earendil-works/pi-coding-agent}"
+# Find the Pi host: PI_GLOBAL, then a managed install (~/.pi/agent), then npm -g.
+if [[ -z "${PI_GLOBAL:-}" ]]; then
+  PI_MANAGED="$HOME/.pi/agent/install"
+  if [[ -r "$PI_MANAGED/current-version" ]]; then
+    PI_GLOBAL="$PI_MANAGED/releases/$(<"$PI_MANAGED/current-version")/node_modules/@earendil-works/pi-coding-agent"
+  fi
+  if [[ ! -d "${PI_GLOBAL:-}" ]]; then PI_GLOBAL="$(npm root -g)/@earendil-works/pi-coding-agent"; fi
+fi
+export PI_GLOBAL
 JITI="$PI_GLOBAL/node_modules/.bin/jiti"
 # Native Pi installs can hoist dependencies beside the scoped host package.
 if [[ ! -x "$JITI" ]]; then JITI="$(dirname "$(dirname "$PI_GLOBAL")")/.bin/jiti"; fi
