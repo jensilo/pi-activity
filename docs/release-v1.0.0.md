@@ -31,4 +31,4 @@ judge fallback.
 
 The release manifest has no signature. The hashes check that files did not change.
 They do not prove who published the release. The classifier does not guarantee
-safety. Pi installs this package from Git, not from npm.
+safety. The package is on npm as `@jensilo/pi-activity@1.0.0` and on GitHub as tag `v1.0.0`.

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-assert.equal(manifest.private, true, "this package must not be published to npm");
+assert.equal(manifest.publishConfig?.access, "public", "scoped package must publish as public");
 assert.deepEqual(manifest.pi.extensions, ["./activity/index.ts"]);
 // Keep this reviewed list explicit: a new runtime/doc file needs review.
 const expected = [
