@@ -10,7 +10,6 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { fileURLToPath } from "node:url";
 import activityExtension, { setFixtureProvider } from "./synthetic-runtime.mjs";
 import { withNativeTools } from "./nine-head-fixtures.mjs";
-import { approvalFixture, assertCompleteArguments, collectApprovalEvidence } from "./approval-fixture.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
@@ -138,34 +137,12 @@ try {
   let prompts = 0;
   ctx.hasUI = true;
   ctx.mode = "tui";
-  ctx.ui.custom = approvalFixture(ctx, (done) => { prompts++; done("Allow"); });
-  assert.notEqual((await gate("git push", "11"))?.block, true, "user can allow a normal auto-mode denial");
-  const reviewEvents = statusEvents.filter(({ key }) => key === "activity-judge");
-  assert.match(reviewEvents[0]?.text ?? "", /Judge: remote mutation requires safety review.*15s left/);
-  assert.equal(reviewEvents.at(-1)?.text, undefined, "judge status is removed before the prompt resolves");
-  let expectedWrite = { path: join(homedir(), "outside.txt"), content: "proposed-write-content" };
-  ctx.ui.custom = approvalFixture(ctx, (done, view) => {
-    prompts++;
-    assert.equal(view.page, 0, "approval begins with visible evidence, not a details menu");
-    view.handleInput("j");
-    const evidence = collectApprovalEvidence(view);
-    assertCompleteArguments(evidence, expectedWrite);
-    done("Allow");
-  });
-  assert.notEqual((await handlers.tool_call({ toolName: "write", toolCallId: "11b", input: expectedWrite }, ctx))?.block, true, "out-of-project write preview must be visible before allowing");
-  const beforeOversize = prompts;
-  const inProjectHuge = await handlers.tool_call({ toolName: "write", toolCallId: "11c-local", input: { path: join(repo, "scratch.txt"), content: "x".repeat(260_000) } }, ctx);
-  assert.notEqual(inProjectHuge?.block, true, "in-project writes are not subject to review limits");
-  expectedWrite = { path: join(homedir(), "outside.txt"), content: "x".repeat(256_000) };
-  const huge = await handlers.tool_call({ toolName: "write", toolCallId: "11c", input: expectedWrite }, ctx);
-  assert.notEqual(huge?.block, true, "review input limits do not prevent informed human approval");
-  assert.equal(prompts, beforeOversize + 1, "oversized action offers full-argument approval");
-  expectedWrite = { path: join(homedir(), "outside.txt"), content: "x".repeat(2_100) };
-  const truncated = await handlers.tool_call({ toolName: "write", toolCallId: "11d", input: expectedWrite }, ctx);
-  assert.notEqual(truncated?.block, true, "long arguments are fully inspectable and manually approvable");
-  assert.equal(prompts, beforeOversize + 2);
-  ctx.ui.custom = approvalFixture(ctx, (done) => { prompts++; done("Block"); });
-  assert.equal((await gate("git push", "12"))?.block, true, "user can decline a normal auto-mode denial");
+  ctx.ui.custom = () => { prompts++; throw new Error("unexpected tool approval"); };
+  assert.equal((await gate("git push", "11"))?.block, true, "an unavailable decision classifier blocks even in TUI");
+  const outsideWrite = await handlers.tool_call({ toolName: "write", toolCallId: "11b",
+    input: { path: join(homedir(), "outside.txt"), content: "x".repeat(256_000) } }, ctx);
+  assert.equal(outsideWrite?.block, true, "review failure cannot manually approve an out-of-project write");
+  assert.equal(prompts, 0);
   await commands["remote-read-only"]("on", ctx);
   const beforeGuard = prompts;
   assert.equal((await gate("git push", "13"))?.block, true, "remote-read-only cannot be overridden");
@@ -179,7 +156,7 @@ try {
   await commands["read-only"]("off", ctx);
   assert.equal((await gate("git push", "16"))?.block, true, "RPC must decline without prompting");
   assert.equal(prompts, beforeGuard, "RPC must never prompt");
-  console.log("  ok  TUI fallback, hard modes, and RPC behavior");
+  console.log("  ok  no-prompt TUI, hard modes, and RPC behavior");
 } catch (err) { failures++; console.error(`FAIL  extended gates: ${err.message}`); }
 
 await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" });
@@ -220,103 +197,7 @@ try {
 } catch (err) { failures++; console.error(`FAIL  hard-mode verdicts: ${err.message}`); }
 await hardHandlers.session_shutdown({ type: "session_shutdown", reason: "quit" });
 
-// Herdr needs user attention only while an interactive approval prompt is open.
-const herdrHandlers = {};
-const herdrEvents = [];
-let finishHerdrReview;
-activityExtension({
-  ...pi,
-  on(name, handler) { herdrHandlers[name] = handler; },
-  events: { emit(name, data) { if (name === "herdr:blocked") herdrEvents.push(data); } },
-}, async () => new Promise((resolve) => { finishHerdrReview = resolve; }), "native");
-await herdrHandlers.session_start({ type: "session_start", reason: "startup" }, ctx);
-try {
-  const call = (id) => herdrHandlers.tool_call({ toolName: "write", toolCallId: id,
-    input: { path: join(homedir(), "outside.txt"), content: "safe" } }, ctx);
-  const waitFor = async (ready) => {
-    for (let i = 0; i < 100 && !ready(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.ok(ready(), "expected review or approval to start");
-  };
-
-  const allowed = call("herdr-allow");
-  await waitFor(() => finishHerdrReview);
-  assert.deepEqual(herdrEvents, [], "pending review must not mark herdr blocked");
-  finishHerdrReview({ ok: true, allow: true, reason: "safe" });
-  assert.notEqual((await allowed)?.block, true);
-  assert.deepEqual(herdrEvents, [], "allowed review must not mark herdr blocked");
-
-  finishHerdrReview = undefined;
-  let finishApproval;
-  ctx.ui.custom = approvalFixture(ctx, (done) => { finishApproval = done; });
-  const denied = call("herdr-deny");
-  await waitFor(() => finishHerdrReview);
-  assert.deepEqual(herdrEvents, [], "pending denial must not mark herdr blocked");
-  finishHerdrReview({ ok: true, allow: false, reason: "needs approval" });
-  await waitFor(() => finishApproval);
-  assert.deepEqual(herdrEvents.map(({ active }) => active), [true], "approval prompt needs user attention");
-  finishApproval("Block");
-  assert.equal((await denied)?.block, true);
-  assert.deepEqual(herdrEvents.map(({ active }) => active), [true, false], "prompt completion clears blocked state");
-
-  ctx.mode = "print";
-  ctx.hasUI = false;
-  finishHerdrReview = undefined;
-  const headless = call("herdr-headless");
-  await waitFor(() => finishHerdrReview);
-  finishHerdrReview({ ok: true, allow: false, reason: "denied" });
-  assert.equal((await headless)?.block, true);
-  assert.deepEqual(herdrEvents.map(({ active }) => active), [true, false], "headless denial must not need user attention");
-
-  ctx.mode = "tui";
-  ctx.hasUI = true;
-  const approvals = [];
-  ctx.ui.custom = approvalFixture(ctx, (done) => { approvals.push(done); });
-  finishHerdrReview = undefined;
-  const first = call("herdr-overlap-first");
-  await waitFor(() => finishHerdrReview);
-  finishHerdrReview({ ok: true, allow: false, reason: "first approval" });
-  await waitFor(() => approvals.length === 1);
-  finishHerdrReview = undefined;
-  const second = call("herdr-overlap-second");
-  await waitFor(() => finishHerdrReview);
-  const beforeQueued = herdrEvents.length;
-  finishHerdrReview({ ok: true, allow: false, reason: "second approval" });
-  await waitFor(() => herdrEvents.length > beforeQueued);
-  assert.equal(approvals.length, 1, "the second pending request cannot mount over the first dialog");
-  const overlapping = herdrEvents.length - 2;
-  assert.deepEqual(herdrEvents.slice(overlapping).map(({ active }) => active), [true, true]);
-  approvals[0]("Block");
-  assert.equal((await first)?.block, true);
-  await waitFor(() => approvals.length === 2);
-  assert.deepEqual(herdrEvents.slice(overlapping).map(({ active }) => active), [true, true, false],
-    "one completed prompt must leave the other blocked");
-  approvals[1]("Block");
-  assert.equal((await second)?.block, true);
-  assert.deepEqual(herdrEvents.slice(overlapping).map(({ active }) => active), [true, true, false, false]);
-
-  let finishShutdownPrompt;
-  ctx.ui.custom = approvalFixture(ctx, (done) => { finishShutdownPrompt = done; });
-  finishHerdrReview = undefined;
-  const shutdown = call("herdr-shutdown");
-  await waitFor(() => finishHerdrReview);
-  finishHerdrReview({ ok: true, allow: false, reason: "shutdown approval" });
-  await waitFor(() => finishShutdownPrompt);
-  assert.equal(herdrEvents.at(-1)?.active, true);
-  await herdrHandlers.session_shutdown({ type: "session_shutdown", reason: "reload" });
-  assert.equal(herdrEvents.at(-1)?.active, false, "shutdown clears an outstanding approval");
-  const afterShutdown = herdrEvents.length;
-  finishShutdownPrompt("Block");
-  assert.equal((await shutdown)?.block, true);
-  assert.equal(herdrEvents.length, afterShutdown, "late prompt completion must not clear another blocked signal");
-  console.log("  ok  herdr blocked state follows prompts and clears on shutdown");
-} catch (err) { failures++; console.error(`FAIL  herdr review lifecycle: ${err.message}`); }
-finally {
-  ctx.mode = "tui";
-  ctx.hasUI = true;
-  await herdrHandlers.session_shutdown({ type: "session_shutdown", reason: "quit" });
-}
-
-// Retry events extend the countdown and explain why the review is taking longer.
+// Retry events update progress and explain why the review is taking longer.
 const retryHandlers = {};
 activityExtension({ ...pi, on(name, handler) { retryHandlers[name] = handler; } },
   async (_ctx, _ref, _tool, _input, _cwd, _modes, _signal, onRetry) => {
@@ -330,8 +211,8 @@ try {
     input: { path: join(homedir(), "outside.txt"), content: "safe" } }, ctx);
   assert.notEqual(result?.block, true);
   const statuses = statusEvents.slice(before).filter(({ key }) => key === "activity-judge");
-  assert.match(statuses[0]?.text ?? "", /Judge: .*15s left/);
-  assert.match(statuses.find(({ text }) => text?.includes("retry 1/3"))?.text ?? "", /retry 1\/3 \(timeout\).*20s left/);
+  assert.match(statuses[0]?.text ?? "", /judge .*s elapsed/i);
+  assert.match(statuses.find(({ text }) => text?.includes("retry 1/5"))?.text ?? "", /retry 1\/5 \(timeout\)/);
   assert.equal(statuses.at(-1)?.text, undefined);
 } catch (err) { failures++; console.error(`FAIL  retry status: ${err.message}`); }
 await retryHandlers.session_shutdown({ type: "session_shutdown", reason: "quit" });
@@ -359,7 +240,7 @@ finally { ctx.signal = undefined; await cancelledHandlers.session_shutdown({ typ
 // An unavailable classifier requires authoritative guard review.
 const configPath = join(agentDir, "config", "activity.json");
 const testConfig = JSON.parse(readFileSync(configPath, "utf8"));
-testConfig.classifier.enabled = false;
+testConfig.acclass = setFixtureProvider({ provider: "none" });
 testConfig.log.mode = "redacted";
 writeFileSync(configPath, JSON.stringify(testConfig));
 let judgeCalls = 0;
@@ -401,7 +282,7 @@ try {
   const broadGrep = entries.find((entry) => entry.callId === "8b");
   assert.equal(broadGrepBlocked, broadGrep.classifier.preds.exposes_secrets,
     "directory grep follows the secret prediction, not a blanket directory rule");
-  assert.ok(entries.some((entry) => entry.prompt?.outcome === "allow"));
+  assert.ok(entries.every((entry) => entry.prompt === null), "new review logs never contain an approval outcome");
   assert.ok(entries.some((entry) => entry.prefilter?.reason === "base:remote-review"));
   assert.ok(entries.some((entry) => entry.callId === "offline-2" && entry.judge?.outcome === "allow"));
   assert.doesNotMatch(diagnostics, /proposed-write-content|scratch\.txt|git push/);

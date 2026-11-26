@@ -44,7 +44,7 @@ export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=import"
 | `managed-runtime` | First-start configuration, one question per runtime, no download after decline or without UI, `/reload`, model selection, shutdown cancellation |
 | `config-*`, `standalone` | One global file, ignored local and project files, settings, model lookup, defaults |
 | `review-policy*`, `inline-policy-gate` | Judge instructions, prompt composition, auto mode off keeps guards |
-| Gate, guard, `judge-last` | Native effects and predictions, unknown custom and MCP effects, exact-call approval, cancellation, blocks after technical failures, no override of guards |
+| Gate, guard, `judge-last` | Native effects and predictions, unknown custom and MCP effects, chat and classifier decisions, classifier-only cascade, cancellation, no-prompt blocks after technical failures, no override of guards |
 | Approval, UI, renderer | Paged dialog, timer, one dialog at a time, resize, keys, unchanged tool rendering, refusal reasons |
 | Interaction, delegation, summary | Questionnaire sources, parent context, branch restore, summary caches |
 | Privacy, audit | Synthetic paths, scrubbing, storage failures, aggregate output |

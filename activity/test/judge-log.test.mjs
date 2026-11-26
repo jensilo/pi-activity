@@ -9,8 +9,7 @@ assert.deepEqual(parseSafetyVerdict('{"decision":"allow","reason":"normal projec
   { decision: "allow", reason: "normal project edit" });
 assert.deepEqual(parseSafetyVerdict('{"decision":"block","reason":"no clear user goal"}'),
   { decision: "block", reason: "no clear user goal" });
-assert.deepEqual(parseSafetyVerdict('{"decision":"ask_user","reason":"approval needed"}'),
-  { decision: "ask_user", reason: "approval needed" });
+assert.equal(parseSafetyVerdict('{"decision":"ask_user","reason":"approval needed"}'), undefined);
 for (const invalid of [
   '{"allow":true,"reason":"legacy schema"}',
   '{"decision":"deny","reason":"x"}',

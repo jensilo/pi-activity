@@ -14,7 +14,7 @@ try {
   const write = (auto) => writeFileSync(join(root, "config/activity.json"), JSON.stringify({ auto }));
   assert.ok(DEFAULT_REVIEW_POLICY.length <= 1700, "default ordinary policy stays short");
   for (const meaning of [/Default ALLOW/, /outside the current directory/, /authentication is not credential disclosure/,
-    /unread documents/, /commit-only request does not authorize pushing/, /consent already given/]) {
+    /unread documents/, /commit-only request does not authorize pushing/, /Do not require new consent for effects already authorized/]) {
     assert.match(DEFAULT_REVIEW_POLICY, meaning);
   }
   assert.equal(DEFAULT_CONFIG.auto.judgeInstructions, "");

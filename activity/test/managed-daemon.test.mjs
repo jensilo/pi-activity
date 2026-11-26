@@ -1,9 +1,12 @@
 // Synthetic installation + real managed verifier/client/Unix daemon. No downloads or providers.
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { mock } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import activityExtension from "../index.ts";
 import { createManagedEvidenceProvider } from "../evidence-provider.ts";
@@ -113,6 +116,19 @@ function gate(home) {
     stop: () => handlers.session_shutdown({}, ctx) };
 }
 
+// Observe the exact environment handed to spawn, without replacing the real child.
+const allowedEnvKeys = ["HOME", "LANG", "PATH", "RAYON_NUM_THREADS"];
+const launchEnvKeys = new Map();
+const spawn = childProcess.spawn;
+const spawnObserver = mock.method(childProcess, "spawn", (binary, ...args) => {
+  if (typeof binary === "string" && binary.startsWith(`${root}/`)) {
+    const env = args[1]?.env;
+    launchEnvKeys.set(binary, env && Object.keys(env).sort());
+  }
+  return spawn(binary, ...args);
+});
+syncBuiltinESMExports();
+
 try {
   globalThis.fetch = async () => { fetches++; throw new Error("Synthetic test forbids network"); };
   delete process.env.PI_SUBAGENT_TASK;
@@ -154,8 +170,11 @@ try {
       const pid = start[0].pid;
       assert.equal(alive(pid), true);
       assert.equal(start[0].socket, f.socket, "socket is version/variant-specific");
-      assert.deepEqual(start[0].envKeys, ["HOME", "LANG", "PATH", "RAYON_NUM_THREADS"],
-        "engine inherits neither credentials nor interpreter/loader hooks");
+      assert.deepEqual(launchEnvKeys.get(f.binary), allowedEnvKeys,
+        "Activity passes only the allowlisted keys, not credentials, loader hooks or invalid thread settings");
+      // macOS adds __CF_USER_TEXT_ENCODING even when spawn was given only the allowlist.
+      const childEnvKeys = start[0].envKeys.filter((key) => process.platform !== "darwin" || key !== "__CF_USER_TEXT_ENCODING");
+      assert.deepEqual(childEnvKeys, allowedEnvKeys, "the daemon sees no other environment keys");
       assert.equal(start[0].threads, "3", "only valid numeric thread settings are forwarded");
       assert.deepEqual(start[0].args, ["serve", "--model", f.model, "--socket", f.socket,
         ...(variant === "fp32" ? ["--quant", "f32"] : ["--gguf"])]);
@@ -180,8 +199,13 @@ try {
       if (variant === "q8") {
         extension = gate(home);
         await extension.start();
-        assert.deepEqual(JSON.parse(await readFile(join(process.env.PI_CODING_AGENT_DIR, "config/activity.json"), "utf8")),
-          { acclass: { enabled: true, variant: "q8" } }, "first-start config contains no manual daemon paths");
+        const configPath = join(process.env.PI_CODING_AGENT_DIR, "config/activity.json");
+        const firstConfig = JSON.parse(await readFile(configPath, "utf8"));
+        assert.deepEqual(firstConfig, { acclass: { enabled: true, variant: "q8" } },
+          "first-start config contains no manual daemon paths");
+        await writeFile(configPath, JSON.stringify({ ...firstConfig,
+          auto: { judgeBackend: "classifier", judgeMode: "short", judgeModel: "synthetic/judge" },
+        }), { mode: 0o600 });
         assert.notEqual((await extension.call())?.block, true, "verified negative shell evidence can fast allow");
         assert.equal(extension.reviews, 0);
       }
@@ -221,6 +245,8 @@ try {
   assert.equal(fetches, 0, "installed managed runtime stays offline");
   console.log("managed daemon tests passed (q8/q5/fp32, real verification/start/reuse, identity, corruption, gate fallback, child cleanup)");
 } finally {
+  spawnObserver.mock.restore();
+  syncBuiltinESMExports();
   globalThis.fetch = originalFetch;
   for (const [key, value] of Object.entries(saved)) value === undefined ? delete process.env[key] : process.env[key] = value;
   await rm(root, { recursive: true, force: true });

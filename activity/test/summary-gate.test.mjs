@@ -20,7 +20,7 @@ mkdirSync(join(dir, "config"));
 const logPath = join(dir, "reviews.jsonl");
 writeFileSync(join(dir, "config/activity.json"), JSON.stringify({
   acclass: setFixtureProvider(createFixtureProvider(dir)),
-  auto: { judgeModel: "test/judge", summaryModel: "test/summary" },
+  auto: { judgeBackend: "classifier", judgeModel: "test/judge", summaryModel: "test/summary" },
   log: { enabled: false }, reviewLog: { enabled: true, path: logPath, maxBytes: 1000000 },
 }));
 // The shell stub predicts an ordinary local read; .env uses the path backstop.
@@ -45,18 +45,17 @@ async function cancelCase(callId, session, phase) {
   const ctx = { cwd: dir, mode: "print", hasUI: false, signal: controller.signal, model: { provider: "test" },
     sessionManager: { getEntries: () => branch, getSessionId: () => session, getBranch: () => branch },
     modelRegistry: { find: (provider, id) => ({ provider, id, contextWindow: 128000 }),
+      findOfType: (type, provider, id) => ({ type, provider, id, api: "synthetic", contextWindow: 128000 }),
+      async classify() { ready(); return new Promise(() => {}); }, // Deliberately ignores cancellation.
       getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake" }) },
     ui: { notify() {}, setStatus() {}, theme: { fg: (_name, value) => value }, select() { approvals++; throw new Error("unexpected approval"); } } };
   activityExtension(pi, (...args) => {
     args[9] = async (model) => {
-      if (model.id === "summary") {
-        paidSummaries++;
-        if (phase === "during-summary") { ready(); return new Promise(() => {}); }
-        return { stopReason: "stop", content: [{ type: "text", text: summary }],
-          usage: { input: 10, output: 20, totalTokens: 30, cost: { total: 0.001 } } };
-      }
-      ready();
-      return new Promise(() => {}); // Reviewer deliberately ignores cancellation.
+      assert.equal(model.id, "summary", "chat completes summaries only");
+      paidSummaries++;
+      if (phase === "during-summary") { ready(); return new Promise(() => {}); }
+      return { stopReason: "stop", content: [{ type: "text", text: summary }],
+        usage: { input: 10, output: 20, totalTokens: 30, cost: { total: 0.001 } } };
     };
     return judgeSafety(...args);
   }, "native");

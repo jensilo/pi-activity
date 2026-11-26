@@ -4,6 +4,10 @@ import { retryAfterMs } from "./retry.js";
 
 export type ResolvedActivityModel = { model: Model<Api>; thinking: ModelThinkingLevel };
 
+export function currentChatModelRef(ctx: ExtensionContext): string | undefined {
+  return ctx.model?.provider && ctx.model?.id ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+}
+
 /** Exact registry references only. Bare ids must name exactly one registered chat model. */
 export async function resolveModelForCall(ctx: ExtensionContext, value: string,
   thinking: ModelThinkingLevel = "off"): Promise<ResolvedActivityModel> {
@@ -82,7 +86,7 @@ export async function completeActivityModel(ctx: ExtensionContext, resolved: Res
       responseObserved = true;
       if (!alreadyStarted) request(model, "http-response", true);
       // Only numeric scheduling metadata escapes this hook, never response headers.
-      // Preserve the server's full minimum wait; the retry loop owns the deadline.
+      // Preserve the server's full minimum wait for the retry loop.
       observeModelCall(observer, { ...base, kind: "http-response", ...identity(model),
         httpStatus: httpResponse.status, retryAfterMs: retryAfterMs(httpResponse) });
     },

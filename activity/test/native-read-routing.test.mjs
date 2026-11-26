@@ -35,7 +35,7 @@ async function harness({ auto, readOnly = false, remoteReadOnly = false, global 
   else process.env.PI_ACTIVITY_AUTO_MODE = "off";
   classifierCalls = 0;
   writeFileSync(join(agentDir, "config", "activity.json"), JSON.stringify({
-    acclass: setFixtureProvider(provider), auto: { judgeModel: judge ? "fixture/reviewer" : null },
+    acclass: setFixtureProvider(provider), auto: { judgeBackend: "classifier", judgeModel: judge ? "fixture/reviewer" : null },
     guards: { readOnly: global && readOnly, remoteReadOnly: global && remoteReadOnly },
   }));
   const handlers = {};
@@ -85,7 +85,7 @@ try {
           const result = await h.call(tool, { path: "module.py", content: "not executed" });
           if (guards.readOnly) {
             blocked(result);
-            assert.match(result.reason, /judge disabled or no current chat model available/);
+            assert.match(result.reason, /no classifier judge configured/);
           } else if (tool === "write" || tool === "edit") {
             allowed(result); // Remote-only guard permits known local effects with auto OFF.
           } else blocked(result); // Unverified custom effects still require a judge.
@@ -125,7 +125,7 @@ try {
   try {
     const result = await noJudge.call("read", { path: "module.py" });
     blocked(result);
-    assert.match(result.reason, /judge disabled or no current chat model available/);
+    assert.match(result.reason, /no classifier judge configured/);
     assert.doesNotMatch(result.reason, /known secret-bearing material/);
   } finally { await noJudge.close(); }
   console.log("native read prediction/auto/guard routing tests passed");

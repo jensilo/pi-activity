@@ -15,7 +15,8 @@ session file for the branch:
 | `activity.user-summary-cache` | Validated summaries, with source identity and versions |
 
 - `session.persistModes` and `session.persistActivity` control the optional records
-  and the summary cache. They do not control the approval records that Activity needs.
+  and the summary cache. They do not control tool outcome or trusted questionnaire
+  records used as review evidence.
 - These records contain private text. They are not anonymous. Summaries keep exact
   permission scopes, targets and conditions.
 - A blocked call did not run. A failed result can have partial effects.

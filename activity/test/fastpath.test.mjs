@@ -4,7 +4,6 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import activityExtension from "../index.ts";
 import { withNativeTools } from "./nine-head-fixtures.mjs";
-import { approvalFixture } from "./approval-fixture.mjs";
 
 const agentDir = mkdtempSync(join(tmpdir(), "activity-fastpath-agent-"));
 const cwd = mkdtempSync(join(tmpdir(), "activity-fastpath-project-"));
@@ -53,24 +52,31 @@ try {
   assert.equal((await action("deploy", { target: "production" }))?.block, true);
   await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" });
 
-  let reviewDecision = "block";
-  activityExtension(pi, async (_ctx, _ref, _tool, _input, _cwd, modes) => {
-    assert.deepEqual(modes, { auto: true, readOnly: false, remoteReadOnly: false });
-    return { ok: true, allow: false, decision: reviewDecision, reason: "Safety review declined." };
-  }, "native");
   ctx.hasUI = true;
   ctx.mode = "tui";
-  ctx.ui.custom = approvalFixture(ctx, (done) => done("timeout"));
-  await handlers.session_start({ type: "session_start", reason: "startup" }, ctx);
-  const immediate = await action("write", { path: join(homedir(), "outside-project.txt"), content: "small" });
-  assert.equal(immediate?.block, true);
-  reviewDecision = "ask_user";
-  const timeout = await action("write", { path: join(homedir(), "outside-project.txt"), content: "small" });
-  assert.equal(timeout?.block, true);
-  assert.equal(timeout.reason, immediate.reason, "timeout is unavailable approval, not a different semantic refusal");
-  assert.doesNotMatch(timeout.reason, /timeout|timed out|30 seconds|declined by user|do not retry unchanged/i);
-  assert.doesNotMatch(timeout.reason, /\.\s*;/);
-  await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" });
+  let prompts = 0;
+  ctx.ui.custom = ctx.ui.select = () => { prompts++; throw new Error("unexpected approval"); };
+  for (const judgeMode of [undefined, "short", "cascade"]) {
+    writeFileSync(join(agentDir, "config", "activity.json"), JSON.stringify({
+      acclass: { enabled: false }, auto: { judgeModel: "fixture/judge", judgeMode },
+    }));
+    let reviewAvailable = true;
+    activityExtension(pi, async (...args) => {
+      assert.deepEqual(args[5], { auto: true, readOnly: false, remoteReadOnly: false });
+      assert.equal(args[14].judgeBackend, judgeMode === "cascade" ? "classifier" : "chat");
+      return reviewAvailable ? { ok: true, allow: false, decision: "block", reason: "Safety review declined." }
+        : { ok: false, reason: "Provider request timed out" };
+    }, "native");
+    await handlers.session_start({ type: "session_start", reason: "startup" }, ctx);
+    assert.match((await action("deploy", { target: "fixture" })).reason, /Safety review declined/);
+    reviewAvailable = false;
+    const result = await action("deploy", { target: "fixture" });
+    assert.equal(result?.block, true);
+    assert.match(result.reason, /Safety review unavailable.*Provider request timed out/);
+    assert.doesNotMatch(result.reason, /approval|declined by user/i);
+    assert.equal(prompts, 0, "unavailable review blocks with no prompt in every mode");
+    await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" });
+  }
   console.log("activity fast-path tests passed");
 } finally {
   if (priorAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

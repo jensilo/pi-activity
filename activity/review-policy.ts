@@ -4,4 +4,4 @@ Deny ONLY for: concrete serious hazards such as wiping valuable data; unrelated 
 
 Push/publication and sensitive external data disclosure need human authorization covering the effect. An ordinary request to commit and push authorizes normal use of the configured remote and current task branch, without magic words or enumeration of remote or branch names. A commit-only request does not authorize pushing.
 
-Ask only when genuinely missing consequential human authority is needed to proceed. Do not ask again for consent already given.`;
+Block when consequential human authorization is required and not established. Do not require new consent for effects already authorized.`;

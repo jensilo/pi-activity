@@ -42,7 +42,7 @@ function configure(overrides = {}) {
     policy: { trustedTools: ["ask_user_question"] },
     log: { enabled: true, mode: "full", path: commandLog },
     reviewLog: { enabled: true, path: reviewLog },
-    auto: { judgeModel: "fixture/reviewer", fallbackJudgeModel: "fixture/fallback", summaryModel: "fixture/summary" },
+    auto: { judgeBackend: "classifier", judgeModel: "fixture/reviewer", fallbackJudgeModel: "fixture/fallback", summaryModel: "fixture/summary", fallbackSummaryModel: "fixture/summary-fallback" },
     ...overrides,
   }));
 }
@@ -181,9 +181,8 @@ function assertReview(h, tool, input, info, modes = { auto: true, readOnly: fals
   assert.ok(args, "the action must receive a safety review");
   assert.equal(args.length, 15);
   assert.equal(args[12], "fixture/summary");
-  assert.equal(args[14].judgeThinking, "off");
-  assert.equal(args[14].summaryThinking, undefined, "summary inherits in judgeSafety");
-  assert.equal(args[14].fallbackJudgeThinking, undefined, "fallback inherits in judgeSafety");
+  assert.equal(args[14].judgeBackend, "classifier");
+  assert.equal(args[14].fallbackSummaryModel, "fixture/summary-fallback");
   assert.equal(typeof args[13], "function");
   assert.equal(args[0].sessionManager, h.ctx.sessionManager);
   assert.equal(args[0].cwd, h.ctx.cwd);
@@ -196,7 +195,7 @@ function assertReview(h, tool, input, info, modes = { auto: true, readOnly: fals
   assert.deepEqual(args[5], modes);
   assert.ok(args[6] instanceof AbortSignal);
   assert.equal(typeof args[7], "function");
-  assert.equal(typeof args[8], "number");
+  assert.equal(args[8], undefined, "the tool gate does not impose a judge deadline");
   assert.equal(args[9], undefined);
   assert.equal(args[10], "fixture/fallback", "fallback ref remains at argument 10");
   assert.deepEqual(args[11], reviewMetadata(info), "only tool metadata goes at argument 11");
@@ -248,8 +247,7 @@ try {
         const result = await h.call("custom_action", { items: ["evaluated"] }, nested);
         if (blocked) {
           assertBlocked(result);
-          assert.match(result.reason, label === "deny" ? /reviewed unsafe/ : /no interactive approval available/);
-          if (label === "deny") assert.doesNotMatch(result.reason, /no interactive approval available/);
+          assert.match(result.reason, label === "deny" ? /reviewed unsafe/ : /Safety review unavailable/);
         } else assertAllowed(result);
         assert.equal(h.reviews.length, 1);
         assert.deepEqual(classifierCalls, []);
@@ -434,14 +432,14 @@ try {
     for (const outcome of ["missing", "allow", "deny"]) {
       await check(`trusted custom mutator requires guard review, ${JSON.stringify(guards)}, ${outcome}`,
         { mode: "tui", tools: [info], config: { guards, policy: { trustedTools: [info.name] },
-          ...(outcome === "missing" ? { auto: { judgeModel: null, fallbackJudgeModel: null } } : {}) },
+          ...(outcome === "missing" ? { auto: { judgeBackend: "classifier", judgeModel: null, fallbackJudgeModel: null } } : {}) },
           reviewer: () => Promise.resolve(outcome === "allow" ? allow : deny) }, async (h) => {
           for (const nested of [false, true]) {
             const input = { operation: "mutate", payload: { id: "synthetic", enabled: true } };
             const result = await h.call(info.name, input, nested);
             if (outcome === "allow") assertAllowed(result);
             else assertBlocked(result);
-            if (outcome === "missing") assert.match(result.reason, /judge disabled or no current chat model available/);
+            if (outcome === "missing") assert.match(result.reason, /no classifier judge configured/);
             else assertReview(h, info.name, input, info,
               { auto: true, readOnly: guards.readOnly === true, remoteReadOnly: guards.remoteReadOnly === true });
           }
@@ -511,10 +509,10 @@ try {
     }
   });
   const hugeMetadata = toolInfo("custom_action", { description: "x".repeat(256_000) });
-  await check("oversized action metadata does not prevent an informed approval prompt",
+  await check("oversized action metadata fails closed without prompting",
     { mode: "tui", tools: [hugeMetadata], reviewer: async () => ({ ok: false, reason: "synthetic review input limit" }) }, async (h) => {
       assertBlocked(await h.call("custom_action", { operation: "read" }));
-      assert.equal(h.approvals.length, 1);
+      assert.equal(h.approvals.length, 0);
       assert.equal(h.reviews.length, 1);
     });
   await check("configured trust is an exact name, not a suffix, case-fold or pattern",

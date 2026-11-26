@@ -13,7 +13,7 @@ assert.deepEqual(manifest.pi.extensions, ["./activity/index.ts"]);
 // Keep this reviewed list explicit: a new runtime/doc file needs review.
 const expected = [
   "package.json", "README.md", "LICENSE", "activity.example.json", "activity.schema.json",
-  "activity/acclass-setup.ts", "activity/action-classifier.ts", "activity/approval.ts",
+  "activity/acclass-setup.ts", "activity/action-classifier.ts",
   "activity/blocked-message.ts", "activity/carry.ts", "activity/classifier.ts",
   "activity/config.ts", "activity/context.ts", "activity/delegation.ts", "activity/display.ts",
   "activity/evidence-provider.ts", "activity/index.ts", "activity/interactions.ts",
@@ -21,7 +21,7 @@ const expected = [
   "activity/observations.ts", "activity/panel.ts", "activity/policy.ts", "activity/privacy.ts",
   "activity/read-classifier.ts", "activity/retry.ts", "activity/review-policy.ts",
   "activity/summary.ts", "activity/telemetry.ts", "activity/version.ts",
-  "docs/events.md", "docs/integration.md", "docs/privacy.md", "docs/release-v1.0.0.md", "docs/release-v1.0.1.md",
+  "docs/events.md", "docs/integration.md", "docs/privacy.md", "docs/release-v1.0.0.md", "docs/release-v1.0.1.md", "docs/release-v1.1.0.md",
   "docs/testing.md", "docs/ui.md",
 ].sort();
 const result = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {

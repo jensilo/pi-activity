@@ -3,14 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import activityExtension from "../index.ts";
 import { judgeSafety } from "../judge.ts";
 import { ActivityObservations, decisionObservation } from "../observations.ts";
 import { OBSERVATION_ENTRY_TYPE } from "../version.ts";
 import { nativeToolInfo, withNativeTools } from "./nine-head-fixtures.mjs";
-import { approvalFixture, assertCompleteArguments, collectApprovalEvidence, escapedEvidence } from "./approval-fixture.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "activity-feature-regressions-"));
 const saved = Object.fromEntries(["PI_CODING_AGENT_DIR", "PI_ACTIVITY_AUTO_MODE", "PI_SUBAGENT_TASK"].map((key) => [key, process.env[key]]));
@@ -19,16 +16,10 @@ delete process.env.PI_ACTIVITY_AUTO_MODE;
 delete process.env.PI_SUBAGENT_TASK;
 mkdirSync(join(root, "config"));
 const configure = (extra = {}) => writeFileSync(join(root, "config/activity.json"), JSON.stringify({
-  acclass: { enabled: false }, auto: { judgeModel: "fixture/judge" },
+  acclass: { enabled: false }, auto: { judgeBackend: "classifier", judgeModel: "fixture/judge" },
   log: { enabled: false }, reviewLog: { enabled: false }, ...extra,
 }));
 const model = { provider: "fixture", id: "judge", api: "synthetic", contextWindow: 128000 };
-const response = (text, physical = model, stopReason = "stop", errorMessage) => ({
-  role: "assistant", provider: physical.provider, model: physical.id, api: physical.api,
-  content: [{ type: "text", text }], stopReason, errorMessage, timestamp: 1,
-  usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 3,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-});
 const modes = { auto: true, readOnly: false, remoteReadOnly: false };
 const live = new AbortController().signal;
 const harnesses = [];
@@ -53,7 +44,7 @@ function harness(review, registry = { find: () => model, getAll: () => [model] }
     ui: { theme: { fg: (_color, text) => text }, notify() {},
       setStatus(key, text) { statuses.push({ key, text }); } },
   };
-  ctx.ui.custom = approvalFixture(ctx, (done) => { prompts++; done("Allow"); });
+  ctx.ui.custom = ctx.ui.select = () => { prompts++; throw new Error("unexpected tool approval"); };
   activityExtension(pi, review, "native");
   const h = { handlers, commands, ctx, statuses, events, entries, get prompts() { return prompts; },
     observer(value) { observer = value; },
@@ -98,56 +89,26 @@ try {
   configure({ auto: { judgeModel: null } });
   const missing = harness();
   await missing.start();
-  assert.equal((await missing.call("bash", { command: "synthetic" })).decision.reason, "auto:user-allow");
-  assert.equal(missing.prompts, 1);
+  assert.equal((await missing.call("bash", { command: "synthetic" })).decision.reason, "auto:judge-unconfigured");
+  assert.equal(missing.prompts, 0);
   await missing.stop();
 
   configure();
-  const outage = harness((...args) => {
-    args[9] = async () => { throw new Error("synthetic transport disconnected"); };
-    return judgeSafety(...args);
+  let decisionCalls = 0;
+  const outage = harness(undefined, {
+    findOfType: (type, provider, id) => ({ type, provider, id, api: "fixture-choice", contextWindow: 128_000 }),
+    classify: async () => { decisionCalls++; throw new Error("synthetic transport disconnected"); },
   });
   await outage.start();
   const outageResult = await outage.call("catalog", {});
-  assert.equal(outageResult.result?.block, undefined, "transport failures retain ordinary TUI approval policy");
-  assert.equal(outage.prompts, 1);
-  assert.equal(outageResult.decision.route, "user-override");
+  assert.equal(outageResult.result?.block, true);
+  assert.match(outageResult.result.reason, /Safety review unavailable/);
+  assert.equal(outage.prompts, 0);
+  assert.equal(outageResult.decision.route, "final-block");
   assert.equal(outageResult.decision.judge.configurationError, undefined);
-  assert.equal(outageResult.decision.judge.providerRequests, 1);
+  assert.ok(decisionCalls > 0);
+  assert.ok(outage.events.every(({ channel }) => channel !== "herdr:blocked"));
   await outage.stop();
-
-  const fullReason = ` synthetic denial ${"full reason ".repeat(30)} FINAL_REASON_TAIL `;
-  const detailed = harness(async () => ({ ok: true, allow: false, decision: "ask_user", reason: fullReason }));
-  await detailed.start();
-  const detailedInput = { payload: "x".repeat(2_100), thinking: null,
-    tail: "FINAL_ARGUMENT_TAIL", escapes: "\\path\n\t\x1b\u202e", frame: "│ leading and trailing │ " };
-  let inspected = false;
-  detailed.ctx.ui.custom = approvalFixture(detailed.ctx, (done, view) => {
-    assert.equal(view.page, 0, "evidence is visible from the first page without a details menu");
-    assert.equal(view.selected, 0, "Block is the default");
-    view.handleInput("j");
-    const evidence = collectApprovalEvidence(view);
-    assertCompleteArguments(evidence, detailedInput);
-    assert.ok(evidence.includes(`Tool call:catalog · cwd: ${escapedEvidence(root)}`));
-    assert.ok(evidence.includes(`Review:${escapedEvidence(fullReason)}`));
-    inspected = true;
-    done("Allow");
-  });
-  assert.equal((await detailed.call("catalog", detailedInput)).decision.reason, "auto:user-allow");
-  assert.equal(inspected, true, "full details are inspected before the exact-call approval");
-  await detailed.stop();
-
-  const mutated = harness(async () => ({ ok: true, allow: false, decision: "ask_user", reason: "synthetic denial" }));
-  await mutated.start();
-  const changingInput = { operation: "first" };
-  mutated.ctx.ui.custom = approvalFixture(mutated.ctx, (done) => {
-    changingInput.operation = "different";
-    done("Allow");
-  });
-  const staleApproval = await mutated.call("catalog", changingInput);
-  assert.equal(staleApproval.result.block, true, "an approval is bound to the arguments shown");
-  assert.match(staleApproval.result.reason, /arguments or policy context changed during review/);
-  await mutated.stop();
 
   let deny = false;
   const ordinary = harness(async () => ({ ok: true, allow: !deny, reason: "DO_NOT_BROADCAST_RAW_REASON" }));
@@ -186,6 +147,11 @@ try {
   const failedEvents = ordinary.events.filter((e) => e.channel === "activity:decision");
   assert.equal(failedEvents.length, beforeError + 1);
   assert.equal(failedEvents.at(-1).data.reason, "auto:gate-failure");
+  configure({ auto: { judgeMode: "cascade", judgeBackend: "chat", judgeModel: "fixture/chat" } });
+  await assert.rejects(ordinary.handlers.tool_call({ toolName: "catalog", toolCallId: "chat-cascade", input: {} }, ordinary.ctx),
+    /cascade requires the classifier judgeBackend/);
+  assert.equal(ordinary.events.findLast((e) => e.channel === "activity:decision").data.verdict, "block");
+  assert.equal(ordinary.prompts, 0);
   configure();
   const originalGate = ActivityObservations.prototype.gate;
   ActivityObservations.prototype.gate = () => { throw new Error("synthetic observation failure"); };
@@ -239,46 +205,7 @@ try {
   assert.equal(emptyHistory.view().totals.files, 1);
   await zero.stop();
 
-  // Real installed registry: a virtual fallback reports a physical generating identity.
-  const credentials = { read: async () => undefined, list: async () => [], modify: async (_provider, fn) => fn(undefined), delete: async () => {} };
-  const runtime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
-  const registry = new ModelRegistry(runtime);
-  const physical = (id) => ({ provider: "fixture-physical", id, name: id, api: "synthetic-fallback", baseUrl: "", reasoning: false,
-    input: ["text"], contextWindow: id === "small" ? 16000 : 128000, maxTokens: 4096,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
-  registry.registerProvider({ id: "fixture-physical", name: "Synthetic keyless provider",
-    auth: { apiKey: { name: "Offline fixture", resolve: async () => ({ auth: {}, source: "synthetic" }) } },
-    getModels: () => [physical("small"), physical("large")], stream() { throw new Error("unexpected API-specific path"); },
-    streamSimple(model, _context, options) {
-      const stream = createAssistantMessageEventStream();
-      queueMicrotask(async () => {
-        await options.onPayload?.({ synthetic: true }, model);
-        await options.onResponse?.({ status: 200, headers: {} }, model);
-        const result = model.id === "small" ? response("", model, "error", "maximum context length exceeded")
-          : response('{"decision":"allow","reason":"synthetic scoped action"}', model);
-        stream.push({ type: "start", partial: result });
-        stream.push(result.stopReason === "error" ? { type: "error", reason: "error", error: result } : { type: "done", reason: "stop", message: result });
-        stream.end(result);
-      });
-      return stream;
-    },
-  });
-  await registry.refresh({ allowNetwork: false, providers: ["fixture-physical"] });
-  for (const id of ["primary", "fallback"]) registry.registerVirtualModel({ provider: "fixture-tiers", id, name: id,
-    route: () => ({ model: registry.find("fixture-physical", id === "primary" ? "small" : "large"), thinkingLevel: "off" }) });
-  await registry.refresh({ allowNetwork: false });
-  configure({ auto: { judgeModel: "fixture-tiers/primary", fallbackJudgeModel: "fixture-tiers/fallback" } });
-  const fallback = harness(undefined, registry);
-  await fallback.start();
-  const routed = await fallback.call("catalog", {});
-  assert.equal(routed.result?.block, undefined);
-  assert.equal(routed.decision.judge.fallbackUsed, true);
-  assert.equal(routed.decision.judge.providerRequests, 2);
-  assert.equal(fallback.latest().telemetry.judge.fallbacks, 1, "physical fallback receipt is counted despite not matching the virtual alias");
-  assert.equal(fallback.latest().telemetry.judge.models.actual["fixture-physical/large"], 1);
-  assert.ok(fallback.statuses.some(({ key, text }) => key === "activity-judge" && text?.includes("s elapsed")));
-  await fallback.stop();
-  console.log("Feature regression tests passed: fail-closed configuration, final private decisions, zero history, virtual fallback and shutdown");
+  console.log("Feature regression tests passed: fail-closed configuration, final private decisions, zero history and shutdown");
 } finally {
   configure();
   for (const h of harnesses) await h.stop();

@@ -1,6 +1,6 @@
 // Synthetic startup faults only. No native tool, provider, installer or network execution.
 import assert from "node:assert/strict";
-import fs, { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,12 +18,14 @@ process.env.PI_ACTIVITY_AUTO_MODE = "off";
 const configDir = join(root, "agent/config");
 const configPath = join(configDir, "activity.json");
 mkdirSync(configDir, { recursive: true });
-const configure = (value = { acclass: { enabled: false } }) => writeFileSync(configPath, JSON.stringify(value));
+const configure = (overrides = {}) => writeFileSync(configPath, JSON.stringify({ acclass: { enabled: false },
+  auto: { judgeBackend: "classifier", judgeMode: "short", judgeModel: "synthetic/judge" }, ...overrides }), { mode: 0o600 });
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
+const initializing = /initialization is incomplete/;
 
-function harness({ flags = {}, branch = [], supplier } = {}) {
+function harness({ cwd = root, flags = {}, branch = [], supplier } = {}) {
   const handlers = {}, notifications = [], reviews = [];
-  const ctx = { cwd: root, hasUI: false, mode: "print", model: { provider: "synthetic", id: "judge" },
+  const ctx = { cwd, hasUI: false, mode: "print",
     sessionManager: { getBranch: () => branch, getSessionId: () => "startup-barrier" },
     ui: { notify(message, level) { notifications.push({ message, level }); }, setStatus() {},
       theme: { fg: (_color, text) => text } },
@@ -42,10 +44,14 @@ function harness({ flags = {}, branch = [], supplier } = {}) {
   };
 }
 
-async function assertMutationsBlocked(h) {
+async function assertMutationsBlocked(h, expectedReason) {
   for (const nested of [false, true]) {
-    assert.equal((await h.call("write", { path: "widget.ts", content: "synthetic" }, nested))?.block, true);
-    assert.equal((await h.call("edit", { path: "widget.ts", oldText: "before", newText: "after" }, nested))?.block, true);
+    for (const [tool, input] of [["write", { path: "widget.ts", content: "synthetic" }],
+      ["edit", { path: "widget.ts", oldText: "before", newText: "after" }]]) {
+      const result = await h.call(tool, input, nested);
+      assert.equal(result?.block, true, `${tool} must be blocked (nested: ${nested})`);
+      if (expectedReason) assert.match(result.reason, expectedReason);
+    }
   }
 }
 
@@ -65,26 +71,48 @@ const faults = ["mkdirSync", "writeFileSync"].map((operation) => {
 syncBuiltinESMExports();
 
 try {
+  // Launch through a symlink, but bind the independent supplier to the real workspace.
+  const workspace = join(root, "workspace");
+  const workspaceAlias = join(root, "workspace-link");
+  mkdirSync(workspace);
+  symlinkSync("workspace", workspaceAlias);
+  const canonicalCwd = realpathSync(workspace);
   // Fault injection works under both root and unprivileged test runners.
   for (const operation of ["mkdirSync", "writeFileSync"]) for (const code of ["EACCES", "EROFS"]) {
     rmSync(configPath, { force: true });
     creationFault = { operation, code, attempts: 0 };
     const inherited = deferred();
-    const h = harness({ flags: { "read-only": true }, supplier: (request) => request.respond(inherited.promise) });
+    let requestedCwd;
+    const h = harness({ cwd: workspaceAlias, flags: { "read-only": true }, supplier: (request) => {
+      requestedCwd = request.cwd;
+      request.respond(inherited.promise);
+    } });
     try {
       const starting = h.start();
-      await assertMutationsBlocked(h);
-      assert.match((await h.call("read", { path: "widget.ts" })).reason, /initialization is incomplete/);
-      inherited.resolve({ context: { version: 1, task: "Inspect synthetic widget", cwd: root,
+      assert.equal(requestedCwd, canonicalCwd, "the policy request uses the real workspace path");
+      await assertMutationsBlocked(h, initializing);
+      assert.match((await h.call("read", { path: "widget.ts" })).reason, initializing);
+      inherited.resolve({ context: { version: 1, task: "Inspect synthetic widget", cwd: canonicalCwd,
         sources: [{ role: "assignment", text: "Inspect synthetic widget" }],
         restrictions: { readOnly: false, remoteReadOnly: true } } });
       await starting;
       assert.equal(existsSync(configPath), false, "failed creation leaves the config absent");
+      const read = await h.call("read", { path: "widget.ts" });
+      assert.notEqual(read?.block, true, read?.reason ?? "completed startup releases the barrier");
       await assertMutationsBlocked(h);
-      assert.notEqual((await h.call("read", { path: "widget.ts" }))?.block, true, "completed startup releases the barrier");
-      assert.notEqual((await h.call("custom", {}))?.block, true);
-      assert.deepEqual(h.reviews.at(-1)[5], { auto: false, readOnly: true, remoteReadOnly: true },
+      const fault = creationFault;
+      creationFault = undefined;
+      configure();
+      creationFault = fault;
+      const reviewCount = h.reviews.length;
+      const custom = await h.call("custom", {});
+      assert.notEqual(custom?.block, true, custom?.reason);
+      assert.equal(h.reviews.length, reviewCount + 1, "custom tool reached the injected judge");
+      const review = h.reviews.at(-1);
+      assert.equal(review[1], "synthetic/judge");
+      assert.deepEqual(review[5], { auto: false, readOnly: true, remoteReadOnly: true },
         "startup flags and inherited restrictions survive failed config creation with auto OFF");
+      rmSync(configPath);
       await h.start();
       assert.equal(creationFault.attempts, 2, `${operation} ${code} was injected on each startup`);
       assert.equal(h.notifications.length, 1, "config creation warns only once per runtime");
@@ -106,8 +134,8 @@ try {
     assert.equal(fs.readFileSync(configPath, "utf8"), "");
     creationFault = undefined;
     configure();
-    await assertMutationsBlocked(partial);
-    assert.match((await partial.call("read", { path: "widget.ts" })).reason, /initialization is incomplete/);
+    await assertMutationsBlocked(partial, initializing);
+    assert.match((await partial.call("read", { path: "widget.ts" })).reason, initializing);
   } finally {
     creationFault = undefined;
     await partial.stop();
@@ -129,8 +157,8 @@ try {
     configure();
     h.ctx.sessionManager.getBranch = getBranch;
     h.pi.getFlag = getFlag;
-    await assertMutationsBlocked(h);
-    assert.match((await h.call("read", { path: "widget.ts" })).reason, /initialization is incomplete/,
+    await assertMutationsBlocked(h, initializing);
+    assert.match((await h.call("read", { path: "widget.ts" })).reason, initializing,
       "fixing the failing dependency alone must not open admission");
     assert.equal(h.reviews.length, 0, "incomplete initialization cannot ask the judge to waive the barrier");
     await h.start();
@@ -143,7 +171,8 @@ try {
   const restored = harness({ branch: [{ type: "custom", customType: "activity-state",
     data: { readOnly: true, auto: false } }] });
   const starting = restored.start();
-  await assertMutationsBlocked(restored);
+  // The first dispatch observes the barrier synchronously; after yielding, startup may finish.
+  assert.match((await restored.call("read", { path: "widget.ts" })).reason, initializing);
   await starting;
   await assertMutationsBlocked(restored);
   assert.notEqual((await restored.call("read", { path: "widget.ts" }))?.block, true);

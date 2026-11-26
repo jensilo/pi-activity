@@ -14,7 +14,7 @@ process.env.PI_CODING_AGENT_DIR = root;
 delete process.env.PI_SUBAGENT_TASK;
 delete process.env.PI_ACTIVITY_AUTO_MODE;
 mkdirSync(join(root, "config"));
-writeFileSync(join(root, "config/activity.json"), JSON.stringify({ auto: { judgeModel: "fixture/judge", summaryModel: "fixture/summary" } }));
+writeFileSync(join(root, "config/activity.json"), JSON.stringify({ auto: { judgeBackend: "classifier", judgeModel: "fixture/judge", summaryModel: "fixture/summary" } }));
 const manager = SessionManager.create(root, join(root, "sessions"));
 const user = (i) => manager.appendMessage({ role: "user", content: `Synthetic permission ${i} ${"a".repeat(40000)}`, timestamp: i });
 for (let i = 0; i < 6; i++) user(i);
@@ -22,9 +22,10 @@ const text = "# User Message Summary\n## Context\nSynthetic context\n## Intent\n
 let requests = 0, callId = 0;
 const prompts = [];
 const complete = async (model, context) => {
-  if (model.id === "summary") { requests++; prompts.push(context.messages[0].content[0].text); }
+  assert.equal(model.id, "summary", "chat completes summaries only");
+  requests++; prompts.push(context.messages[0].content[0].text);
   return { role: "assistant", api: "fixture", provider: "fixture", model: model.id, stopReason: "stop", timestamp: 1,
-    content: [{ type: "text", text: model.id === "summary" ? text : '{"decision":"allow","reason":"synthetic safe"}' }],
+    content: [{ type: "text", text }],
     usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } };
 };
 function harness() {
@@ -33,7 +34,11 @@ function harness() {
     getFlag: (name) => name === "auto", getAllTools: () => [{ name: "bash", sourceInfo: { source: "builtin", path: "builtin:bash" } }],
     appendEntry(type, data) { manager.appendCustomEntry(type, structuredClone(data)); }, sendMessage() {}, events: { emit() {} } };
   const ctx = { cwd: root, mode: "print", hasUI: false, sessionManager: manager,
-    modelRegistry: { find: (provider, id) => ({ provider, id, api: "fixture", contextWindow: 128000 }) } };
+    modelRegistry: { find: (provider, id) => ({ provider, id, api: "fixture", contextWindow: 128000 }),
+      findOfType: (type, provider, id) => ({ type, provider, id, api: "fixture", contextWindow: 128000 }),
+      classify: async () => ({ provider: "fixture", model: "judge", api: "fixture", stopReason: "stop",
+        answers: { verdict: { type: "choice", choice: "allow" } } }),
+    } };
   activityExtension(pi, (...args) => { args[9] = complete; return judgeSafety(...args); }, "native");
   return { handlers, ctx };
 }

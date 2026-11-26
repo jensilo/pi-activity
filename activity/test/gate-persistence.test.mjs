@@ -18,7 +18,7 @@ delete process.env.PI_SUBAGENT_TASK;
 mkdirSync(join(dir, "config"));
 const configPath = join(dir, "config/activity.json");
 const configure = (extra = {}) => writeFileSync(configPath, JSON.stringify({
-  acclass: { enabled: false }, auto: { judgeModel: "test/judge", summaryModel: "test/summary" },
+  acclass: { enabled: false }, auto: { judgeBackend: "classifier", judgeModel: "test/judge", summaryModel: "test/summary" },
   log: { enabled: false }, reviewLog: { enabled: false }, ...extra,
 }));
 configure();
@@ -28,8 +28,9 @@ const response = (text, model) => ({ role: "assistant", api: "synthetic", provid
   stopReason: "stop", content: [{ type: "text", text }], timestamp: 1,
   usage: { input: 1, output: 1, totalTokens: 2, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } });
 const complete = async (model) => {
-  if (model.id === "summary") { summaryRequests++; return response(summary, "summary"); }
-  return response('{"decision":"allow","reason":"synthetic safe"}', "judge");
+  assert.equal(model.id, "summary", "chat completes summaries only");
+  summaryRequests++;
+  return response(summary, "summary");
 };
 let id = 0;
 const model = (provider, name) => ({ provider, id: name, api: "synthetic", contextWindow: 128000 });
@@ -47,7 +48,11 @@ function harness(review = (...args) => { args[9] = complete; return judgeSafety(
     sessionManager: {
       getBranch: () => active.getBranch(), getSessionId: () => active.getSessionId(),
       getEntries() { throw new Error("abandoned branches must not seed state"); },
-    }, modelRegistry: { find: model, getAll: () => [model("test", "judge"), model("test", "summary")] },
+    }, modelRegistry: { find: model, getAll: () => [model("test", "summary")],
+      findOfType: (type, provider, id) => ({ ...model(provider, id), type }),
+      classify: async () => ({ provider: "test", model: "judge", api: "synthetic", stopReason: "stop",
+        answers: { verdict: { type: "choice", choice: "allow" } } }),
+    },
     ui: { theme: { fg: (_color, text) => text }, setStatus(key, text) { statuses.push({ key, text }); }, notify() {} },
   };
   activityExtension(pi, review, "native");
@@ -76,7 +81,7 @@ try {
   assert.ok(!JSON.stringify(latest()).includes("synthetic_secret_123"), "persisted previews redact credential values");
   const bashHistory = latest().history.find((call) => call.category === "sh");
   assert.match(bashHistory.preview.text, /printf fixture/);
-  assert.match(bashHistory.explanation.text, /synthetic safe/, "sanitized verdict explanations survive reload");
+  assert.match(bashHistory.explanation.text, /selected allow/, "sanitized decision text survives reload");
   assert.equal(bashHistory.durationMs, 45, "host execution duration is persisted after the result hook");
   await h.handlers.agent_settled({}, h.ctx);
   await h.commands["read-only"]("on", h.ctx);
@@ -101,7 +106,7 @@ try {
   assert.equal(summaryRequests, 1, "reload restores exact-source cache instead of paying for a new summary");
   assert.equal(latest().telemetry.summaries.cached, 2, "guard-conflicting native call and shell call both use review cache");
   assert.equal(latest().telemetry.summaries.restored, 1);
-  assert.match(latest().history.find((call) => call.id === bashHistory.id).explanation.text, /synthetic safe/);
+  assert.match(latest().history.find((call) => call.id === bashHistory.id).explanation.text, /selected allow/);
   assert.equal(latest().history.find((call) => call.id === bashHistory.id).durationMs, 45, "execution duration survives a real session reload");
 
   // Tree navigation restores both observation totals and guards, not all file entries.

@@ -8,7 +8,7 @@
 | --- | --- |
 | Overview | Active modes, coverage, final blocks, reported errors, the three most frequent block reasons, counts, guard wait and speed. No commands, paths, tool names, provider IDs or explanations. |
 | History | Recent calls, newest first. Press Enter to expand a call. Details are sanitized previews, explanations, reasons, sources, routes, classifier labels and timings. |
-| Diagnostics | All metrics: classifier inputs, latency, model records, judge outcomes and retries, summaries, approvals, turn telemetry and all nine labels. |
+| Diagnostics | All metrics: classifier inputs, latency, model records, judge outcomes and retries, summaries, turn telemetry and all nine labels. Old sessions may also show historical tool approval counts. |
 
 Sanitized History remains private session data. Do not publish it.
 
@@ -69,7 +69,7 @@ close hint. The keys work at every size.
 - **Reported errors** do not prove that a tool ran.
 - **Guard wait** is the time that the agent waited for Activity's tool checks.
   Overlapping checks count once. It includes the classifier, foreground summaries,
-  the judge and your approval. It does not include tool run time, model thinking or
+  and the judge. It does not include tool run time, model thinking or
   your own shell commands. Missing values show **unavailable**. Partial values show
   **partial**.
 - **Median and p95** use a limited set of samples. **Mean and count** use all
@@ -109,8 +109,7 @@ while a message is pending.
 
 ## Activity row
 
-The row sits below the editor. Counts are on the left. The judge clock and deadline
-are on the right. On a narrow terminal, the row shortens the reason first. On a very
+The row sits below the editor. Counts are on the left. Judge elapsed time is on the right. On a narrow terminal, the row shortens the reason first. On a very
 narrow terminal, it can also shorten the counts.
 
 The row does not replace Pi's footer or the widgets of other extensions. Hosts
@@ -132,71 +131,12 @@ When Activity blocks a call:
 Pi can show an edit preview before Activity blocks the edit. A preview does not
 prove that the edit ran.
 
-## Approval
+There is no tool approval dialog. If the judge cannot complete a required review,
+the call stays blocked. A refusal tells the agent to find a safe alternative or do
+other unblocked work, not to bypass guards or retry the same call, and to ask you
+only if no safe path remains. The separate acclass installation consent dialog is
+unchanged.
 
-Activity opens a dialog in these cases:
-
-- The judge answers `ask_user`.
-- The judge fails for a technical reason, such as a timeout.
-
-Activity does not open a dialog in these cases. The call stays blocked.
-
-- The judge answers `block`.
-- A guard is active.
-- The judge configuration or the judge answer is invalid.
-- The turn is cancelled, or the call is stale.
-- The session is RPC, JSON or print.
-
-If the terminal is too small, the dialog says "Resize terminal to approve". You
-cannot approve until the dialog fits.
-
-### What you see
-
-The dialog shows the tool, the working directory, the reason and all arguments, in
-pages. It uses at most 18 rows. **Block** is selected first.
-
-Activity shows backslashes, terminal commands and invisible direction controls as
-escaped text. It does not run or remove them. Activity keeps the data in memory. It
-creates no argument file and no reusable permission.
-
-| Keys | Action |
-| --- | --- |
-| `j` / `k`, Up / Down | Select Allow or Block |
-| `h` / `l`, Left / Right | Previous / next page |
-| Home / End | First / last page |
-| Enter | Confirm |
-| Esc, Ctrl+C | Cancel |
-
-Your Pi selection and cancellation keys also apply. The hints show them.
-
-### Timer
-
-- Dialogs open one at a time in each session. A call waits in the queue for at most
-  30 seconds.
-- An open dialog closes after 30 seconds without input.
-- Each key press or paste in the dialog resets the timer. Redraws, resizes, terminal
-  reports, key releases and Pi global shortcuts do not reset it.
-- There is no total limit while you use the dialog.
-- A cancelled turn or a session change closes the dialog.
-
-### Results
-
-| Result | Effect |
-| --- | --- |
-| Allow | The unchanged call runs. |
-| Block | The call does not run. The agent learns that you declined. It must not retry the same call. |
-| Timeout | The agent gets the same refusal as for a judge `block`. Telemetry records `timeout`. It does not count as your refusal. |
-| Cancel, no UI | The call does not run. It does not count as your refusal. |
-
-A refusal starts with **Blocked — tool was not run.** and the reason. It tells the
-agent to find a safe alternative or do other unblocked work. It also tells the agent
-not to bypass guards or retry the same call, and to ask you only if no safe path
-remains.
-
-Allow has these limits:
-
-- It applies to this exact call only. It cannot override a guard.
-- It cannot repair a tool failure after the call starts.
-- Activity freezes the arguments after Allow. Later handlers cannot change them.
-  Extensions that transform arguments must run before Activity.
-- It does not protect against a hostile extension in the same process.
+A judge's `allow` applies only to the exact reviewed call and cannot override a
+guard. Activity freezes the reviewed arguments. Extensions that transform arguments
+must run before Activity. This is not isolation from hostile same-process code.

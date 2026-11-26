@@ -48,8 +48,8 @@ To answer a request:
 4. Set both `restrictions` values. `false` adds no restriction. `true` turns the
    guard on, and the session cannot turn it off.
 
-After a claim, Activity stops all tools if any of these occurs. It does not use
-local rules or open an approval dialog.
+After a claim, Activity stops all tools if any of these occurs. It does not fall
+back to local rules.
 
 - The result has a null context or an `error`, even an empty one.
 - The promise rejects, or the result has no answer within 6 seconds.

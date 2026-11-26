@@ -17,7 +17,7 @@ try {
   mkdirSync(join(root, "config"));
   mkdirSync(join(cwd, ".pi"), { recursive: true });
   const example = JSON.parse(readFileSync(new URL("../../activity.example.json", import.meta.url), "utf8"));
-  assert.equal(DEFAULT_CONFIG.auto.judgeModel, undefined, "omitted judge follows ctx.model");
+  assert.equal(DEFAULT_CONFIG.auto.judgeModel, undefined, "no model is pinned by default");
   assert.equal(DEFAULT_CONFIG.auto.summaryModel, undefined, "summary follows the effective judge");
   assert.equal(DEFAULT_CONFIG.auto.fallbackJudgeModel ?? undefined, undefined, "no implicit escalation");
   write(join(root, "config/activity.json"), { acclass: { enabled: false }, auto: { judgeModel: "fixture/judge" }, guards: { readOnly: true } });
@@ -78,7 +78,7 @@ try {
   assert.equal(calls, 0);
   assert.equal(missing.metrics.providerRequests, 0);
   // Check published metadata last so stale metadata cannot hide runtime failures.
-  assert.deepEqual(example, { acclass: DEFAULT_CONFIG.acclass }, "published example is the brief first-start config, not all advanced defaults");
+  assert.deepEqual(example, { acclass: DEFAULT_CONFIG.acclass, auto: { judgeModel: null } }, "example leaves review unconfigured");
   console.log("explicit registry model configuration tests passed");
 } finally {
   for (const [key, value] of Object.entries(saved)) value === undefined ? delete process.env[key] : process.env[key] = value;

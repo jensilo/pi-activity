@@ -60,7 +60,10 @@ try {
   for (const response of ["not JSON\n", JSON.stringify(wireResponse({ identity: {} })) + "\n",
     JSON.stringify({ identity: wireResponse().identity, preds: {} }) + "\n",
     JSON.stringify({ identity: wireResponse().identity, error: "bad schema", status: 503 }) + "\n",
-    JSON.stringify({ identity: wireResponse().identity, error: "quota exceeded", status: 429 }) + "\n"]) {
+    JSON.stringify({ identity: wireResponse().identity, error: "quota exceeded", status: 429 }) + "\n",
+    JSON.stringify({ identity: wireResponse().identity, error: "synthetic transport failure", code: "UND_ERR_SOCKET" }) + "\n",
+    JSON.stringify({ identity: wireResponse().identity, error: "headers timed out" }) + "\n",
+    JSON.stringify({ identity: wireResponse().identity, error: "service unavailable", code: "UNKNOWN" }) + "\n"]) {
     const before = requests;
     respond = (connection) => connection.end(response);
     assert.equal((await classify()).ok, false);

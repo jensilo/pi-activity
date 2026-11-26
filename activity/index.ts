@@ -12,10 +12,8 @@
  *      plus `--remote-read-only` / `/remote-read-only`. Native file policy is deterministic. An explicit
  *      managed classifier can fast-path shell actions after download consent.
  *      MCP/custom actions (except explicitly trusted tools), blocked candidates,
- *      and classifier failures require a judge (the current chat model by default)
- *      (fixed 30 seconds, initial attempt plus five transient retries). Ordinary
- *      ask_user verdicts and eligible technical failures offer a TUI Allow/Block prompt
- *      (30 seconds); active guards and non-interactive modes never prompt.
+ *      and classifier failures require a safety judge
+ *      (provider timeouts, up to five judge retries). Unavailable review blocks.
  *      `PI_ACTIVITY_AUTO_MODE=off` disables ordinary auto-mode gating for sandbox use.
  *
  * Private metadata and sanitized action capture are independently opt-in
@@ -32,9 +30,9 @@ import { loadConfig, ensureDefaultActivityConfig } from "./config.js";
 import { DEFAULT_ACCLASS, ensureAcclass, type AcclassSettings } from "./acclass-setup.js";
 import { createBlockPresentation, type BlockPresentation } from "./blocked-message.js";
 import { carryStateFromPreviousSession } from "./carry.js";
-import { judgeSafety, restoreSafetySummaries, clearSafetySummaries, cancelSafetySummaryWork, INITIAL_REVIEW_MS, MAX_REVIEW_MS, MAX_RETRIES,
-  type ReviewMetadata, type ReviewRetry } from "./judge.js";
-import { requestApproval, type Approval } from "./approval.js";
+import { judgeSafety, restoreSafetySummaries, clearSafetySummaries, cancelSafetySummaryWork, MAX_RETRIES,
+  type ReviewMetadata, type ReviewOptions, type ReviewRetry } from "./judge.js";
+import { currentChatModelRef } from "./model-policy.js";
 import { collectInstructionSnapshot, type ReviewToolMetadata } from "./context.js";
 import { obtainDelegatedContext, validateDelegatedContext, type DelegatedContextSnapshot } from "./delegation.js";
 import { createManagedEvidenceProvider, type EvidenceProviderFactory, type EvidenceProvider, type EvidenceIdentity, type EvidenceResult } from "./evidence-provider.js";
@@ -75,7 +73,8 @@ export type ActivityConfig = {
   session: { persistModes: boolean; persistActivity: boolean };
   acclass: AcclassSettings;
   policy: { readAllowlist: string[]; trustedTools: string[]; questionnaireSources: string[] };
-  auto: { judgeModel?: string | null; fallbackJudgeModel?: string | null; summaryModel?: string | null;
+  auto: { judgeModel?: string | null; fallbackJudgeModel?: string | null; summaryModel?: string | null; fallbackSummaryModel?: string | null;
+    judgeMode?: ReviewOptions["judgeMode"]; judgeBackend?: ReviewOptions["judgeBackend"]; judgeMaxChars?: number;
     judgeThinking: ModelThinkingLevel; summaryThinking?: ModelThinkingLevel; fallbackJudgeThinking?: ModelThinkingLevel;
     judgeInstructions: string };
   guards: Guards;
@@ -154,11 +153,24 @@ function config(_cwd?: string): ActivityConfig {
   if (cfg.auto && Object.hasOwn(cfg.auto, "judgePromptFiles")) {
     throw new Error("activity.auto.judgePromptFiles is no longer supported; use inline judgeInstructions");
   }
-  if (!cfg.auto || typeof cfg.auto !== "object" || Array.isArray(cfg.auto) ||
-      [cfg.auto.judgeModel, cfg.auto.summaryModel, cfg.auto.fallbackJudgeModel].some((ref) =>
-      ref != null && (typeof ref !== "string" || !ref.trim()))) {
-    throw new Error("activity.auto model references must be nonempty strings or null; configure auto.judgeModel as provider/model to enable safety review");
+  if (!cfg.auto || typeof cfg.auto !== "object" || Array.isArray(cfg.auto)) throw new Error("activity.auto must be an object");
+  if (cfg.auto.judgeBackend !== undefined && cfg.auto.judgeBackend !== "classifier" && cfg.auto.judgeBackend !== "chat") {
+    throw new Error("activity.auto.judgeBackend must be chat or classifier");
   }
+  if (cfg.auto.judgeMode === "cascade" && cfg.auto.judgeBackend === "chat") {
+    throw new Error("activity.auto.judgeMode cascade requires the classifier judgeBackend");
+  }
+  const backend = judgeBackend(cfg.auto);
+  for (const key of ["judgeModel", "fallbackJudgeModel", "summaryModel", "fallbackSummaryModel"] as const) {
+    const value = cfg.auto[key];
+    if (value == null) continue;
+    const classifier = backend === "classifier" && (key === "judgeModel" || key === "fallbackJudgeModel");
+    if (typeof value !== "string" || (classifier ? !/^[^/\s]+\/\S+$/.test(value) : !value.trim())) {
+      throw new Error(`activity.auto.${key} must be ${classifier ? "an exact classifier provider/model" : "a nonempty chat model"} reference or null`);
+    }
+  }
+  if (cfg.auto.judgeMode !== undefined && !["short", "full", "cascade"].includes(cfg.auto.judgeMode)) throw new Error("activity.auto.judgeMode must be short, full, or cascade");
+  if (cfg.auto.judgeMaxChars !== undefined && (!Number.isSafeInteger(cfg.auto.judgeMaxChars) || cfg.auto.judgeMaxChars < 1 || cfg.auto.judgeMaxChars > 768_000)) throw new Error("activity.auto.judgeMaxChars must be between 1 and 768000");
   if (typeof cfg.auto.judgeInstructions !== "string" || Buffer.byteLength(cfg.auto.judgeInstructions, "utf8") > 32 * 1024) {
     throw new Error("activity.auto.judgeInstructions must be a string of at most 32768 UTF-8 bytes");
   }
@@ -203,9 +215,19 @@ function config(_cwd?: string): ActivityConfig {
 
 export { config as loadActivityConfig };
 
-function judgeModelRef(cfg: ActivityConfig, ctx: ExtensionContext): string | undefined {
-  if (cfg.auto.judgeModel !== undefined) return cfg.auto.judgeModel ?? undefined;
-  return ctx.model?.provider && ctx.model?.id ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+function judgeBackend(auto: ActivityConfig["auto"]): NonNullable<ReviewOptions["judgeBackend"]> {
+  return auto.judgeBackend ?? (auto.judgeMode === "cascade" ? "classifier" : "chat");
+}
+
+function judgeModelRef(auto: ActivityConfig["auto"], ctx: ExtensionContext): string | undefined {
+  if (auto.judgeModel !== undefined) return auto.judgeModel ?? undefined;
+  return judgeBackend(auto) === "chat" ? currentChatModelRef(ctx) : undefined;
+}
+
+function summaryModelRef(auto: ActivityConfig["auto"], ctx: ExtensionContext, judgeRef: string | undefined): string | undefined {
+  if (!judgeRef || auto.judgeMode === "short") return undefined;
+  return auto.summaryModel ?? (auto.judgeMode === "cascade" ? currentChatModelRef(ctx)
+    : judgeBackend(auto) === "chat" ? judgeRef : undefined);
 }
 
 function short(text: string, max: number): string {
@@ -246,12 +268,6 @@ function observe(work: () => void): void {
 function broadcastState(pi: ExtensionAPI, ctx: ExtensionContext): void {
   const guards = effectiveGuards(config(ctx.cwd));
   pi.events.emit("activity:state", { readOnly: guards.readOnly, auto: state.auto, guards: { remoteReadOnly: guards.remoteReadOnly } });
-}
-
-/** Mark interactive approval as needing user attention in herdr.
- *  Safety review itself keeps the agent working until a prompt opens. */
-function emitBlocked(pi: ExtensionAPI, active: boolean, label?: string): void {
-  pi.events.emit("herdr:blocked", active ? { active: true, label } : { active: false });
 }
 
 function persistState(pi: ExtensionAPI): void {
@@ -305,7 +321,6 @@ type ReviewTrace = {
   classifierAttempted?: boolean;
   summary?: SummaryMetadata;
   judge?: { ref: string; outcome: Evaluation["reviewStatus"]; wallMs: number } & ReviewMetadata;
-  prompt?: { outcome: Approval; wallMs: number };
   actionJson?: string;
   toolMetadata?: ReviewToolMetadata;
   omitWrapperCapture?: boolean;
@@ -486,13 +501,13 @@ function humanReason(decision: Decision): string {
 }
 
 // Pi permits later admission handlers to mutate this same execution object.
-// After reviewed or human approval, ordinary in-place mutation must fail rather
-// than change the exact action that was approved. This is not isolation from hostile same-process code.
-function freezeApprovedInput(value: unknown, seen = new WeakSet<object>()): void {
+// After judge review, ordinary in-place mutation must fail rather than change
+// the reviewed action. This is not isolation from hostile same-process code.
+function freezeReviewedInput(value: unknown, seen = new WeakSet<object>()): void {
   if (!value || typeof value !== "object" || seen.has(value)) return;
   seen.add(value);
   for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
-    if ("value" in descriptor) freezeApprovedInput(descriptor.value, seen);
+    if ("value" in descriptor) freezeReviewedInput(descriptor.value, seen);
   }
   Object.freeze(value);
 }
@@ -542,7 +557,7 @@ function recordDecision(
     actionEvidence: trace.actionEvidence ?? null,
     summary: trace.judge?.summary ?? trace.summary ?? null,
     judge: trace.judge ? { ...trace.judge, summary: undefined } : null,
-    prompt: trace.prompt ?? null,
+    prompt: null, // Legacy log field; the gate no longer prompts.
     final: { verdict: evaluation.decision.verdict, decision, reason: evaluation.decision.reason },
     wallMs: Math.round(performance.now() - trace.startedAt),
   };
@@ -582,7 +597,7 @@ function recordDecision(
     prefilter: trace.prefilter ?? null,
     modes: trace.modes,
     judgeOutcome: trace.judge?.outcome ?? null,
-    userOverride: trace.prompt?.outcome ?? null,
+    userOverride: null,
     scope: evaluation.scope.scope,
     paths: full ? evaluation.scope.paths : { inside: [], outside: [] },
     verdict: evaluation.decision.verdict,
@@ -618,9 +633,8 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
   let bashReceiptAnchor: string | undefined;
   const callScopes = new Map<string, InvocationScope>();
   const pendingUserBash: string[] = [];
-  const deadlines = new Map<AbortController, ReturnType<typeof setTimeout>>();
-  const pendingReviews = new Map<symbol, { startedAt: number; expiresAt: number; trigger: string; retry?: ReviewRetry }>();
-  const pendingApprovals = new Set<symbol>();
+  const activeJudgeCalls = new Set<AbortController>();
+  const pendingReviews = new Map<symbol, { startedAt: number; trigger: string; retry?: ReviewRetry }>();
   let reviewStatusCtx: ExtensionContext | undefined;
   let reviewStatusTimer: ReturnType<typeof setInterval> | undefined;
   let renderPanel: (() => void) | undefined;
@@ -743,14 +757,10 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
     callScopes.clear();
     lifecycle.abort();
     lifecycle = new AbortController();
-    for (const [controller, timer] of deadlines) { clearTimeout(timer); controller.abort(); }
-    deadlines.clear();
+    for (const controller of activeJudgeCalls) controller.abort();
+    activeJudgeCalls.clear();
     pendingReviews.clear();
     renderReviewStatus();
-    for (const approval of pendingApprovals) {
-      pendingApprovals.delete(approval);
-      observe(() => emitBlocked(pi, false));
-    }
     pendingUserBash.length = 0;
     reviewRecorder.clear();
     if (resetSummaries) clearSafetySummaries();
@@ -791,8 +801,8 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
     if (process.env.PI_ACTIVITY_AUTO_MODE?.trim().toLowerCase() === "off") state.auto = false;
     observe(() => observations.restore(cfg.session.persistActivity ? branch : []));
     observe(() => observations.setClassifierEnabled(cfg.acclass.enabled));
-    observe(() => observations.setModels({ judge: judgeModelRef(cfg, ctx),
-      summary: cfg.auto.summaryModel ?? judgeModelRef(cfg, ctx) }));
+    const judgeRef = judgeModelRef(cfg.auto, ctx);
+    observe(() => observations.setModels({ judge: judgeRef, summary: summaryModelRef(cfg.auto, ctx, judgeRef) }));
     observe(() => {
       const restored: unknown = cfg.session.persistActivity ? restoreSafetySummaries(ctx, sessionOrigin) : 0;
       if (typeof restored === "number" && Number.isSafeInteger(restored) && restored >= 0) {
@@ -822,13 +832,12 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
       return;
     }
     if (!reviewStatusCtx) return;
-    const current = [...pendingReviews.values()].reduce((a, b) => a.expiresAt <= b.expiresAt ? a : b);
-    const left = Math.max(0, Math.ceil((current.expiresAt - Date.now()) / 1000));
+    const current = pendingReviews.values().next().value!;
     const count = pendingReviews.size > 1 ? ` ×${pendingReviews.size}` : "";
     try {
       const elapsed = Math.max(0, Math.floor((Date.now() - current.startedAt) / 1000));
       const progress = current.retry ? ` · retry ${current.retry.retry}/${MAX_RETRIES} (${current.retry.cause})` : "";
-      const judge = `⚖️ judge ${elapsed}s elapsed · ${left}s left${count}${progress}`;
+      const judge = `⚖️ judge ${elapsed}s elapsed${count}${progress}`;
       // Timing is separate from the expendable reason so it survives clipping.
       setActivityLine(reviewStatusCtx, judge, short(current.trigger, 48));
     } catch {
@@ -836,12 +845,12 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
     }
   }
 
-  function showReviewStatus(ctx: ExtensionContext, trigger: string, expiresAt: number): {
+  function showReviewStatus(ctx: ExtensionContext, trigger: string): {
     retry: (event: ReviewRetry) => void; clear: () => void;
   } {
     if (ctx.mode !== "tui" || !ctx.hasUI || !config(ctx.cwd).display.enabled) return { retry: () => {}, clear: () => {} };
     const id = Symbol("judge-review");
-    const review = { startedAt: Date.now(), expiresAt, trigger, retry: undefined as ReviewRetry | undefined };
+    const review = { startedAt: Date.now(), trigger, retry: undefined as ReviewRetry | undefined };
     pendingReviews.set(id, review);
     reviewStatusCtx = ctx;
     renderReviewStatus();
@@ -947,7 +956,7 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
         ctx.ui.confirm("Install optional local Activity classifier?", request.message, { signal: setupSignal }) : undefined,
       setupSignal);
       if (!setupSignal.aborted && setup.status === "unavailable") {
-        observe(() => ctx.ui.notify("acclass setup or verification failed. Activity will use the LLM judge. Check the release endpoint and installation integrity, then /reload to retry.", "warning"));
+        observe(() => ctx.ui.notify("acclass setup or verification failed. Calls needing review use the safety judge or block. Check the release endpoint and installation integrity, then /reload to retry.", "warning"));
       }
     }
   });
@@ -1020,24 +1029,31 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
       users: collectUserMessages(ctx, sessionOrigin), instructions: collectInstructionSnapshot(ctx) });
     // Inline instruction identity is part of each admission, including guards.
     const judgeInstructions = cfg.auto.judgeInstructions;
-    const judgeModel = judgeModelRef(cfg, ctx);
-    const judgePromptIdentity = () => config().auto.judgeInstructions;
+    const backend = judgeBackend(cfg.auto);
+    const judgeModel = judgeModelRef(cfg.auto, ctx);
+    const summaryRef = cfg.auto.summaryModel ?? undefined;
+    const configuredSummaryRef = summaryModelRef(cfg.auto, ctx, judgeModel);
+    const reviewConfigIdentity = (auto: ActivityConfig["auto"]) => JSON.stringify([
+      auto.judgeInstructions, auto.judgeMode, auto.judgeMaxChars, judgeBackend(auto), judgeModelRef(auto, ctx),
+      auto.fallbackJudgeModel, auto.summaryModel, auto.summaryThinking, auto.fallbackSummaryModel,
+      auto.judgeMode === "cascade" ? currentChatModelRef(ctx) : undefined,
+      ...(judgeBackend(auto) === "chat" ? [auto.judgeThinking, auto.fallbackJudgeThinking] : []),
+    ]);
+    const boundConfig = reviewConfigIdentity(cfg.auto);
     const boundContext = contextIdentity();
     const staleCall = () => {
       try {
         validateDelegatedContext(ctx, delegatedContext, cwd);
         return ctx.cwd !== cwd || event.input !== boundInput || boundCall !== completeJson({ tool: event.toolName, input: event.input,
           cwd: ctx.cwd, id: event.toolCallId, parent: event.parentToolCallId ?? null }) || contextIdentity() !== boundContext ||
-          judgePromptIdentity() !== judgeInstructions || judgeModelRef(config(), ctx) !== judgeModel;
+          reviewConfigIdentity(config().auto) !== boundConfig;
       } catch { return true; }
     };
     let originalJudgeReason: string | undefined;
-    let explicitUserBlock = false;
     const refusal = (reason: string) => {
       const original = originalJudgeReason?.replace(/[.!?;]+$/, "");
-      let preserved = original && !reason.includes(original)
+      const preserved = original && !reason.includes(original)
         ? appendReason(originalJudgeReason!, reason) : reason;
-      if (explicitUserBlock && !preserved.includes("action declined by user; do not retry unchanged")) preserved = appendReason(preserved, "action declined by user; do not retry unchanged");
       return `Blocked — tool was not run. ${preserved}\nContinue with a safe alternative that resolves this reason, or other unblocked work; prefer progress when the user is away. Do not bypass guards or retry unchanged. Ask only when no safe path remains.`;
     };
     const staleResult = () => ({ block: true as const, reason: refusal("Tool arguments or policy context changed during review; this call cannot execute.") });
@@ -1051,10 +1067,10 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
       toolMetadata,
       omitWrapperCapture,
       observeDecision: (evaluation, finalTrace) => {
+        const route = evaluation.decision.verdict === "block" ? "final-block"
+          : evaluation.decision.reason === "auto:judge-allow" ? "judge-allow" : "local-allow";
         receipt.decision = {
-          verdict: evaluation.decision.verdict, reason: evaluation.decision.reason,
-          route: evaluation.decision.verdict === "block" ? "final-block" : evaluation.decision.reason === "auto:user-allow" ? "user-override"
-            : evaluation.decision.reason === "auto:judge-allow" ? "judge-allow" : "local-allow",
+          verdict: evaluation.decision.verdict, reason: evaluation.decision.reason, route,
           classifier: {
             inputType,
             status: finalTrace.classifier ? "success" : evaluation.classifierEvidence?.provider === "none" ? "disabled"
@@ -1070,8 +1086,7 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
         const obs = receipt.observations;
         obs.gate(observedEvent(event), evaluation.decision.verdict, { info: receipt.info,
           explanation: operationalPreviews ? evaluation.failure ?? humanReason(evaluation.decision) : undefined, reason: evaluation.decision.reason,
-          route: evaluation.decision.verdict === "block" ? "final-block" : evaluation.decision.reason === "auto:user-allow" ? "user-override"
-            : evaluation.decision.reason === "auto:judge-allow" ? "judge-allow" : "local-allow",
+          route,
           gateMs: Math.round(performance.now() - finalTrace.startedAt), reviewMs: finalTrace.judge?.wallMs,
           signals: finalTrace.classifier,
           prefilter: finalTrace.prefilter?.verdict === "block" ? "review" : "allow" }, receipt.scope);
@@ -1083,15 +1098,11 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
           appliedHeads: finalTrace.classifier?.appliedHeads, wallMs: evaluation.classifierEvidence?.wallMs ?? (finalTrace.classifierAttempted ? finalTrace.prefilter?.wallMs : undefined),
           inferenceMs: finalTrace.classifier ? finalTrace.prefilter?.inferenceMs : undefined, toolCallId: event.toolCallId,
         }, receipt.scope);
-        if (finalTrace.prompt) obs.approval(finalTrace.prompt.outcome,
-          evaluation.decision.verdict === "allow" && evaluation.decision.reason === "auto:user-allow", receipt.scope,
-          { wallMs: finalTrace.prompt.wallMs });
+
       },
     };
 
-    // Shell classification is local. The judge and optional TUI prompt each get their
-    // own fixed deadline. Judge retries share a total 30-second budget;
-    // RPC/print/subagent modes never wait for approval.
+    // Shell classification is local. Judge calls use provider timeouts.
     if (state.auto || anyGuardOn(guards)) {
       const actionTool = inputType === "action";
       const info = receipt.info;
@@ -1129,7 +1140,7 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
           source: actionTool ? "action" : evaluation.source, failure: "turn cancelled during classification; action declined" };
         trace.trigger = "auto:cancelled";
         logDecision(cfg, ctx, tool, event.input, evaluation, "cancelled", trace);
-        // No safety reviewer, approval prompt, or UI update for cancelled work.
+        // No safety reviewer or UI update for cancelled work.
         return { block: true, reason: blockReason(evaluation) };
       }
       if (staleCall()) return staleResult();
@@ -1157,41 +1168,35 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
       if (guardBlock) evaluation.decision = guardBlock;
       const objections = [evaluation.decision.reason];
       if (state.auto && nativePrims?.exposes_secrets) objections.push("Credential-path heuristic; establish task scope and actual upstream permission, not assignment claims.");
-      let technicalStop = false;
-      let policyBlock = false;
       const needsReview = evaluation.decision.verdict === "block";
-      const missingJudge = needsReview && !judgeModel;
-      if (missingJudge) {
+      if (needsReview && !judgeModel) {
         evaluation = { ...evaluation, source: "llm", reviewStatus: "unavailable",
           decision: { verdict: "block", reason: "auto:judge-unconfigured", guard: "auto" },
-          failure: "Safety review unavailable (technical failure): judge disabled or no current chat model available. Set auto.judgeModel to provider/model, or omit it to use the current chat model." };
+          failure: backend === "classifier"
+            ? "Safety review unavailable: no classifier judge configured. Set auto.judgeModel to a registered classifier provider/model."
+            : "Safety review unavailable: chat judge disabled or no current chat model available. Set auto.judgeModel to a registered chat model, or omit it to use the current chat model." };
         trace.trigger = "auto:judge-unconfigured";
       }
       if (needsReview && judgeModel) {
           trace.trigger = evaluation.decision.reason;
           const trigger = humanReason(evaluation.decision);
-          const reviewStartedAt = Date.now();
-          const reviewExpiresAt = reviewStartedAt + INITIAL_REVIEW_MS;
-          const deadlineController = new AbortController();
-          const deadlineTimer = setTimeout(() => deadlineController.abort(), MAX_REVIEW_MS);
-          deadlines.set(deadlineController, deadlineTimer);
-          const deadline = deadlineController.signal;
-          const signal = ctx.signal ? AbortSignal.any([ctx.signal, deadline]) : deadline;
-          const status = showReviewStatus(ctx, trigger, reviewExpiresAt);
-          observe(() => receipt.observations.judgeStarted(trace.callId, reviewExpiresAt, receipt.scope));
+          const judgeController = new AbortController();
+          activeJudgeCalls.add(judgeController);
+          const signal = ctx.signal ? AbortSignal.any([ctx.signal, judgeController.signal]) : judgeController.signal;
+          const status = cfg.auto.judgeMode === "short" ? undefined : showReviewStatus(ctx, trigger);
+          observe(() => receipt.observations.judgeStarted(trace.callId, undefined, receipt.scope));
           const onRetry = (event: ReviewRetry) => {
             if (receipt.generation !== generation || signal.aborted) return;
-            observe(() => receipt.observations.judgeRetry(trace.callId, reviewExpiresAt, receipt.scope));
-            status.retry(event);
+            observe(() => receipt.observations.judgeRetry(trace.callId, undefined, receipt.scope));
+            status?.retry(event);
           };
           const judgeStartedAt = performance.now();
           let judgeMetrics: ReviewMetadata | undefined;
           try {
             const judgeRef = judgeModel;
-            const summaryRef = cfg.auto.summaryModel ?? judgeRef;
             const fallbackRef = cfg.auto.fallbackJudgeModel ?? undefined;
             const outcome = reviewSafety(ctx, judgeRef, tool, event.input, cwd, trace.modes, signal, onRetry,
-              reviewExpiresAt, undefined, fallbackRef, toolMetadata, summaryRef,
+              undefined, undefined, fallbackRef, toolMetadata, summaryRef,
               (summary) => {
                 if (receipt.generation === generation) trace.summary = { ...summary };
               }, {
@@ -1199,9 +1204,10 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
                 delegatedContext, origin: sessionOrigin,
                 instructionSnapshot: collectInstructionSnapshot(ctx),
                 judgeInstructions,
-                judgeThinking: cfg.auto.judgeThinking,
+                judgeMode: cfg.auto.judgeMode, judgeBackend: backend, judgeMaxChars: cfg.auto.judgeMaxChars,
+                ...(backend === "chat" ? { judgeThinking: cfg.auto.judgeThinking, fallbackJudgeThinking: cfg.auto.fallbackJudgeThinking } : {}),
                 summaryThinking: cfg.auto.summaryThinking,
-                fallbackJudgeThinking: cfg.auto.fallbackJudgeThinking,
+                fallbackSummaryModel: cfg.auto.fallbackSummaryModel ?? undefined,
                 persistSummary: (type, data) => {
                   if (receipt.generation === generation && !signal.aborted && cfg.session.persistActivity) {
                     observe(() => pi.appendEntry(type, data));
@@ -1211,7 +1217,7 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
                   if (receipt.generation !== generation || signal.aborted || event.kind !== "provider-request") return;
                   observe(() => {
                     const model = event.provider && event.model ? `${event.provider}/${event.model}` : undefined;
-                    if (event.operation === "summary") receipt.observations.summaryRequest(receipt.scope, { model, configuredModel: summaryRef });
+                    if (event.operation === "summary") receipt.observations.summaryRequest(receipt.scope, { model, configuredModel: configuredSummaryRef });
                     else {
                       receipt.observations.judgeRequest(trace.callId, event.fallbackUsed === true,
                         receipt.scope, { model, configuredModel: judgeRef });
@@ -1222,19 +1228,15 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
             const verdict = await waitForClassification(() => outcome, signal);
             evaluation.source = "llm";
             judgeMetrics = verdict?.metrics;
-            technicalStop = !!verdict?.technicalStop || !!judgeMetrics?.configurationError;
             if (verdict?.ok && typeof verdict.reason === "string") originalJudgeReason = verdict.reason.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().slice(0, 300);
-            policyBlock = verdict?.ok === true && !verdict.allow && verdict.decision !== "ask_user";
             const inconsistent = verdict?.ok && verdict.allow && !!guardBlock;
-            if (inconsistent) technicalStop = true;
-            const reviewExpired = deadline.aborted || Date.now() >= reviewExpiresAt;
-            evaluation.reviewStatus = ctx.signal?.aborted ? "cancelled" : reviewExpired ? "timeout"
-              : inconsistent || technicalStop ? "unavailable" : verdict?.ok ? verdict.allow ? "allow" : "deny" : "unavailable";
-            evaluation.failure = ctx.signal?.aborted ? "safety review cancelled"
-              : reviewExpired ? `safety judge timed out after ${(reviewExpiresAt - reviewStartedAt) / 1000} seconds`
+            const technicalStop = !!verdict?.technicalStop || !!judgeMetrics?.configurationError || inconsistent;
+            evaluation.reviewStatus = signal.aborted ? "cancelled"
+              : technicalStop || !verdict?.ok ? "unavailable" : verdict.allow ? "allow" : "deny";
+            evaluation.failure = signal.aborted ? "safety review cancelled"
               : inconsistent ? "Invalid/inconsistent safety review: allow contradicts established native mutation under the active read-only restriction"
               : verdict?.ok ? verdict.reason : `Safety review unavailable (technical failure): ${verdict?.reason ?? "no result"}`;
-            evaluation.decision = !technicalStop && !signal.aborted && !reviewExpired && verdict?.ok && verdict.allow
+            evaluation.decision = !technicalStop && !signal.aborted && verdict?.ok && verdict.allow
               ? { verdict: "allow", reason: "auto:judge-allow", guard: "auto" }
               : { verdict: "block", reason: judgeMetrics?.configurationError ? "auto:judge-configuration" : "auto:judge", guard: "auto" };
           } catch (err) {
@@ -1244,15 +1246,14 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
           } finally {
             trace.judge = { ref: judgeModel, outcome: evaluation.reviewStatus ?? "unavailable",
               wallMs: Math.round(performance.now() - judgeStartedAt), ...judgeMetrics };
-            clearTimeout(deadlineTimer);
-            deadlines.delete(deadlineController);
+            activeJudgeCalls.delete(judgeController);
             if (receipt.generation === generation) {
               observe(() => receipt.observations.judgeFinished(trace.callId, evaluation.reviewStatus ?? "unavailable", trace.judge!.wallMs, receipt.scope));
               // Summary callbacks are cumulative progress, not separate logical summaries.
               const summary = judgeMetrics?.summary ?? trace.summary;
               if (summary) observe(() => receipt.observations.summary(summary.status, summary.wallMs, receipt.scope));
             }
-            status.clear();
+            status?.clear();
           }
       }
       if (staleCall()) return staleResult();
@@ -1260,56 +1261,10 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
         ? evaluation.source === "llm" ? "judge-allow" : "allow"
         : evaluation.source === "llm" ? "judge-block" : "policy-block";
       // A newly enabled mode must never be bypassed by a stale model verdict.
-      const modeChanged = () => {
-        const now = effectiveGuards(config(cwd));
-        return Object.entries(now).some(([key, on]) => on && !guards[key as keyof Guards]);
-      };
-      if (modeChanged()) {
-        evaluation = { ...evaluation, decision: { verdict: "block", reason: "auto:mode-changed", guard: "auto" },
-          failure: "safety mode changed during review; retry the action" };
-        decision = "mode-block";
-      }
-      if (evaluation.decision.verdict === "block" && !policyBlock && !technicalStop && !anyGuardOn(guards) &&
-          !modeChanged() && !ctx.signal?.aborted && ctx.mode === "tui" && ctx.hasUI) {
-        // Evidence is complete and ephemeral. Review input limits are technical
-        // failures, not a prohibition on informed human approval.
-        const rawArguments = JSON.stringify(event.input) ?? "(no arguments)";
-        const label = `${tool} · cwd: ${cwd}`;
-        const approvalId = Symbol("approval");
-        pendingApprovals.add(approvalId);
-        observe(() => receipt.observations.approvalPrompt(receipt.scope));
-        observe(() => emitBlocked(pi, true, evaluation.failure ?? humanReason(evaluation.decision)));
-        try {
-          const promptStartedAt = performance.now();
-          const approval = await requestApproval(ctx, label, evaluation.failure ?? humanReason(evaluation.decision), 30_000, rawArguments);
-          trace.prompt = { outcome: approval, wallMs: Math.round(performance.now() - promptStartedAt) };
-          explicitUserBlock = approval === "block";
-          const argumentsChanged = (JSON.stringify(event.input) ?? "(no arguments)") !== rawArguments;
-          const effectiveOverride = approval === "allow" && !argumentsChanged && !staleCall() && !modeChanged() && !ctx.signal?.aborted && receipt.generation === generation;
-          if (effectiveOverride) {
-            freezeApprovedInput(event.input);
-            evaluation.decision = { verdict: "allow", reason: "auto:user-allow", guard: "auto" };
-            decision = "user-allow";
-          } else {
-            decision = approval === "timeout" ? "prompt-timeout" : approval === "block" ? "user-block"
-              : approval === "cancelled" ? "prompt-cancelled" : approval === "unavailable" ? "prompt-unavailable" : "approval-invalidated";
-            // Timeout is unavailable approval, not a human rejection. Keep the
-            // same refusal as immediate judge block; only telemetry records timeout.
-            const detail = approval === "timeout" ? undefined
-              : approval === "block" ? "action declined by user; do not retry unchanged"
-              : approval === "cancelled" ? "approval cancelled; action declined"
-              : approval === "unavailable" ? "no interactive approval available; action declined"
-              : argumentsChanged ? "tool arguments changed during approval; this call cannot execute"
-              : "safety mode changed or turn was cancelled; action declined";
-            if (detail) evaluation.failure = appendReason(evaluation.failure ?? "safety review declined", detail);
-          }
-        } finally {
-          if (pendingApprovals.delete(approvalId)) observe(() => emitBlocked(pi, false));
-        }
-      }
-      if (staleCall()) return staleResult();
-      if (evaluation.decision.verdict === "block" || modeChanged() || ctx.signal?.aborted) {
-        if (modeChanged()) {
+      const currentGuards = effectiveGuards(config(cwd));
+      const modeChanged = (currentGuards.readOnly && !guards.readOnly) || (currentGuards.remoteReadOnly && !guards.remoteReadOnly);
+      if (evaluation.decision.verdict === "block" || modeChanged || ctx.signal?.aborted) {
+        if (modeChanged) {
           evaluation.failure = "safety mode changed; action declined";
           evaluation.decision = { verdict: "block", reason: "auto:mode-changed", guard: "auto" };
           decision = "mode-block";
@@ -1318,18 +1273,13 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
           evaluation.decision = { verdict: "block", reason: "auto:cancelled", guard: "auto" };
           decision = "cancelled";
         }
-        evaluation.decision = { ...evaluation.decision, verdict: "block" };
-        if (!policyBlock && !technicalStop && !modeChanged() && !ctx.signal?.aborted &&
-            (ctx.mode !== "tui" || !ctx.hasUI) && !anyGuardOn(guards)) {
-          evaluation.failure = appendReason(evaluation.failure ?? humanReason(evaluation.decision), "no interactive approval available; action declined");
-        }
         const reason = refusal(blockReason(evaluation));
-        logDecision(cfg, ctx, tool, event.input, evaluation, decision === "allow" ? "judge-block" : decision, trace);
+        logDecision(cfg, ctx, tool, event.input, evaluation, decision, trace);
         updateWidget(ctx, receipt.generation);
         return { block: true, reason };
       }
-      if (evaluation.decision.reason === "auto:judge-allow" || evaluation.decision.reason === "auto:user-allow") {
-        freezeApprovedInput(event.input);
+      if (evaluation.decision.reason === "auto:judge-allow") {
+        freezeReviewedInput(event.input);
         Object.defineProperty(event, "input", { value: event.input, writable: false, configurable: false, enumerable: true });
       }
       logDecision(cfg, ctx, tool, event.input, evaluation, decision, trace);
@@ -1384,7 +1334,9 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
     const receipt: GateReceipt = { ...callScope(event, ctx), observations,
       modes: { auto: state.auto, readOnly: state.readOnly, remoteReadOnly: state.guards.remoteReadOnly } };
     const signal = ctx.signal ? AbortSignal.any([ctx.signal, lifecycle.signal]) : lifecycle.signal;
-    const gateCtx = Object.defineProperty({ ...ctx, signal }, "cwd", { get: () => ctx.cwd }) as ExtensionContext;
+    const gateCtx = Object.defineProperties({ ...ctx, signal }, {
+      cwd: { get: () => ctx.cwd }, model: { get: () => ctx.model },
+    }) as ExtensionContext;
     let waitToken: symbol | undefined;
     observe(() => { waitToken = receipt.observations.gateWaitStarted(receipt.scope); });
     checkpoint(ctx);

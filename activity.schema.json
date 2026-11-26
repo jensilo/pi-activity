@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Pi activity configuration",
-  "description": "Only global <agent-dir>/config/activity.json is read. Objects merge with built-in defaults; arrays replace. No local overrides or project configuration. Managed acclass defaults to enabled Q8; an omitted judge uses the current registered chat model.",
+  "description": "Only global <agent-dir>/config/activity.json is read. Objects merge with built-in defaults; arrays replace. No local overrides or project configuration. Managed acclass defaults to enabled Q8. Full and short review can use a Pi chat model or decision classifier; cascade requires a classifier. Calls needing review block if the judge is disabled or unavailable.",
   "type": "object",
   "properties": {
     "maxCommandChars": { "type": "integer", "minimum": 1, "default": 4000, "description": "Display limit only. Classifier and reviewer inputs are never clipped to this limit." },
@@ -23,9 +23,9 @@
     "acclass": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Managed local classifier under ~/.acclass. Reuse a valid matching installation; new installation requires one UI confirmation before network work. Unsafe/corrupt installs are not silently repaired. If UI is unavailable, consent is declined or verification/setup fails, calls needing review use the LLM judge, never unchecked fast allow. Paths and daemon settings are internal.",
+      "description": "Managed local classifier under ~/.acclass. Reuse a valid matching installation; new installation requires one UI confirmation before network work. Unsafe/corrupt installs are not silently repaired. If UI is unavailable, consent is declined or verification/setup fails, calls needing review use the safety judge or block. Paths and daemon settings are internal.",
       "properties": {
-        "enabled": { "type": "boolean", "default": true, "description": "Enable managed classification and the first-session setup offer. false uses judge review where needed, without installing or starting acclass." },
+        "enabled": { "type": "boolean", "default": true, "description": "Enable managed classification and the first-session setup offer. false uses configured judge review where needed, without installing or starting acclass." },
         "variant": { "type": "string", "enum": ["q8", "q5", "fp32"], "default": "q8", "description": "Model variant for the managed, verified installation." }
       }
     },
@@ -50,12 +50,29 @@
       "properties": {
         "judgeInstructions": { "type": "string", "maxLength": 32768, "default": "", "description": "Inline trusted safety judge guidance, bounded at runtime to 32768 UTF-8 bytes. Reread per admission and bound to the reviewed call. No prompt files or project discovery. Cannot change active guards, consent provenance, verdict format or the no-workflow-gating remit; not an ACL for deterministic fast paths. Do not include secrets." },
         "judgePromptFiles": { "not": {}, "description": "Not a supported configuration field. No prompt files are read." },
-        "judgeModel": { "$ref": "#/$defs/optionalModelRef", "description": "Omit to use ctx.model, the current registered chat model with normal Pi registry routing/authentication. A string selects an exact registered model. Explicit null disables the judge. Missing/unavailable review never automatically allows a call: eligible ordinary TUI calls may receive informed exact-call approval; active guards and noninteractive sessions fail closed." },
-        "summaryModel": { "$ref": "#/$defs/optionalModelRef", "description": "Optional summary target. Omit/null to follow the effective judge, including the current chat model when the judge is omitted. Failure uses complete raw user context within the review input limit." },
-        "judgeThinking": { "$ref": "#/$defs/thinking", "default": "off", "description": "Judge thinking level, separate from the exact model reference. Colons in model IDs are literal." },
-        "summaryThinking": { "$ref": "#/$defs/thinking", "description": "Summary thinking level. Omit to follow judgeThinking, even when summaryModel differs." },
-        "fallbackJudgeThinking": { "$ref": "#/$defs/thinking", "description": "Fallback thinking level. Omit to follow judgeThinking." },
-        "fallbackJudgeModel": { "$ref": "#/$defs/optionalModelRef", "default": null, "description": "No implicit escalation. Omit/null to disable. Only an explicit target enables fallback." }
+        "judgeMode": { "enum": ["short", "full", "cascade"], "default": "full", "description": "Cascade requires the classifier backend. It tries the latest user message first and reviews again with a cached summary on block, confidence below 0.60, or when auto mode omitted earlier user input or instructions." },
+        "judgeBackend": { "enum": ["chat", "classifier"], "description": "Defaults to chat for full and short, and classifier for cascade." },
+        "judgeMaxChars": { "type": "integer", "minimum": 1, "maximum": 768000, "description": "Character budget on Activity's judge request content before provider formatting. Short and cascade default to 32000. Omit in full mode to keep the usual history guideline." },
+        "judgeModel": { "$ref": "#/$defs/optionalModelRef", "description": "Model reference for the selected backend. Omit to use the current chat model with the chat backend or leave review unconfigured with the classifier backend. Set null to disable review. Missing or unavailable review blocks without an approval dialog." },
+        "summaryModel": { "$ref": "#/$defs/optionalModelRef", "description": "Optional chat summary target. Cascade defaults to the current chat model. Full mode defaults to the chat judge, or raw history if using a classifier with no summary target. Short mode does not summarize." },
+        "fallbackSummaryModel": { "$ref": "#/$defs/optionalModelRef", "default": null, "description": "Optional chat fallback for failed summaries, not for judge decisions. Cascade can also fall back to the current chat model with low thinking." },
+        "judgeThinking": { "$ref": "#/$defs/thinking", "default": "off", "description": "Thinking level for a chat judge. Ignored by the classifier backend." },
+        "summaryThinking": { "$ref": "#/$defs/thinking", "description": "Thinking level for chat summary models. Defaults to low in cascade, the judge thinking level with a chat judge, and off otherwise." },
+        "fallbackJudgeThinking": { "$ref": "#/$defs/thinking", "description": "Thinking level for a chat fallback judge. Defaults to judgeThinking. Ignored by the classifier backend." },
+        "fallbackJudgeModel": { "$ref": "#/$defs/optionalModelRef", "default": null, "description": "Optional model on the same backend for technical failures. Never used to override a valid final decision." }
+      },
+      "if": {
+        "anyOf": [
+          { "required": ["judgeMode"], "properties": { "judgeMode": { "const": "cascade" } } },
+          { "required": ["judgeBackend"], "properties": { "judgeBackend": { "const": "classifier" } } }
+        ]
+      },
+      "then": {
+        "properties": {
+          "judgeBackend": { "const": "classifier" },
+          "judgeModel": { "$ref": "#/$defs/optionalClassifierRef" },
+          "fallbackJudgeModel": { "$ref": "#/$defs/optionalClassifierRef" }
+        }
       }
     },
     "trustedTools": { "not": {}, "description": "Not a supported root field. Trust settings belong inside policy." },
@@ -87,7 +104,8 @@
     }
   },
   "$defs": {
-    "optionalModelRef": { "type": ["string", "null"], "minLength": 1, "description": "Exact provider/model reference, including registered virtual models. Colons remain part of the model ID; thinking is configured separately. A bare registered model id must resolve unambiguously. Fully qualified refs avoid provider dependence. No model-policy installation or personal aliases are used." },
+    "optionalClassifierRef": { "type": ["string", "null"], "pattern": "^[^/\\s]+/\\S+$", "description": "Exact registered classifier provider/model. Colons and additional slashes in the model ID are literal." },
+    "optionalModelRef": { "type": ["string", "null"], "pattern": "\\S", "description": "Registered chat model reference, including registered virtual models. Colons remain part of the model ID; thinking is configured separately. A bare registered model id must resolve unambiguously. No model-policy installation or personal aliases are used." },
     "thinking": { "type": "string", "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }
   }
 }

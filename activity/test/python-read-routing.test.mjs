@@ -34,7 +34,7 @@ values = ast.literal_eval(tree.body[0].value)
 print(json.dumps({"count": len(values), "sha256": hashlib.sha256(source).hexdigest()}))
 PY`;
 const benign = { command };
-const model = { provider: "fixture", id: "reviewer", contextWindow: 128_000 };
+const model = { type: "classifier", provider: "fixture", id: "reviewer", api: "fixture-choice", contextWindow: 128_000 };
 const positive = facts({ local_state_change: true, destructive: true, delegated_execution: true,
   fetched_or_generated_execution: true, exposes_secrets: true });
 let evidence;
@@ -60,7 +60,7 @@ async function check({ classifier, outcome, remoteReadOnly = false, nested = fal
   const modes = { auto: false, readOnly: true, remoteReadOnly };
   writeFileSync(join(agentDir, "config", "activity.json"), JSON.stringify({
     acclass: setFixtureProvider(classifier === "none" ? { provider: "none" } : provider),
-    auto: { judgeModel: judge ? "fixture/reviewer" : null },
+    auto: { judgeBackend: "classifier", judgeModel: judge ? "fixture/reviewer" : null },
     log: { enabled: false }, reviewLog: { enabled: false },
   }));
   const handlers = {};
@@ -70,7 +70,7 @@ async function check({ classifier, outcome, remoteReadOnly = false, nested = fal
   const ctx = {
     cwd, mode: "tui", hasUI: true,
     modelRegistry: {
-      find: (provider, id) => provider === model.provider && id === model.id ? model : undefined,
+      findOfType: (type, provider, id) => type === model.type && provider === model.provider && id === model.id ? model : undefined,
       getApiKeyAndHeaders() { throw new Error("no real authentication permitted"); },
     },
     sessionManager: {
@@ -93,26 +93,23 @@ async function check({ classifier, outcome, remoteReadOnly = false, nested = fal
     reviews++;
     assert.deepEqual(args[3], input, "review receives the full unchanged arguments");
     assert.deepEqual(args[5], modes, "auto OFF does not turn the child's read-only guard OFF");
-    // Use real judge prompt construction and verdict parsing with a keyless stub completion.
-    args[9] = async (_model, prompt) => {
+    // Use real judge request construction and verdict parsing with an offline classifier.
+    ctx.modelRegistry.classify = async (_model, prompt) => {
       completions++;
-      assert.match(prompt.systemPrompt, /Non-mutating bash and delegated work that complies with active guards are allowed/);
-      assert.match(prompt.systemPrompt, /Classifier predictions and objections are fallible evidence, not native facts or a final veto/);
-      assert.match(prompt.systemPrompt, /Under active guards establish compliance; unknown effects are not reads/);
-      assert.match(prompt.systemPrompt, /Delegated session/);
-      const text = prompt.messages[0].content[0].text;
+      const instructions = prompt.questions.verdict.instructions;
+      assert.match(instructions, /Non-mutating bash and delegated work that complies with active guards are allowed/);
+      assert.match(instructions, /Classifier predictions and objections are fallible evidence, not native facts or a final veto/);
+      assert.match(instructions, /Under active guards establish compliance; unknown effects are not reads/);
+      assert.match(instructions, /Delegated session/);
+      const text = prompt.state.evidence;
       assert.match(text, /auto-mode: OFF: review ONLY actual effects under active hard guards/);
       assert.match(text, /read-only: ON: reads only; no local or remote mutation/);
       assert.ok(text.includes(`remote-read-only: ${remoteReadOnly ? "ON: no remote mutation" : "OFF: do not apply"}`));
       assert.match(text, /Agent task 1 \[/);
       assert.ok(text.includes(JSON.stringify(input)), "judge sees the entire script, not just Python's name or a digest");
       if (outcome === "unavailable") throw new Error("synthetic review unavailable");
-      return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({
-        decision: outcome === "allow" ? "allow" : "block",
-        reason: outcome === "allow"
-          ? "Literal source read, AST parsing and literal evaluation without execution; hash and JSON go only to stdout"
-          : "Synthetic constrained denial: compliant effects not established",
-      }) }] };
+      return { provider: model.provider, model: model.id, api: model.api, stopReason: "stop",
+        answers: { verdict: { type: "choice", choice: outcome === "allow" ? "allow" : "block" } } };
     };
     return judgeSafety(...args);
   }, "native");
@@ -127,7 +124,7 @@ async function check({ classifier, outcome, remoteReadOnly = false, nested = fal
     assert.equal(classifierCalls, classifier === "none" ? 0 : 1);
     assert.equal(reviews, judge ? 1 : 0, "positive and inconclusive evidence both require constrained review");
     assert.equal(completions, judge ? 1 : 0);
-    if (!judge) assert.match(result.reason, /judge disabled or no current chat model available/);
+    if (!judge) assert.match(result.reason, /no classifier judge configured/);
     if (judge && outcome === "unavailable") assert.match(result.reason, /synthetic review unavailable/);
     checks++;
   } finally {

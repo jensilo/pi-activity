@@ -6,7 +6,7 @@ authorization, and active hard guards. A denial must identify the concrete effec
 target and hazard or applicable safety boundary. These are model instructions,
 not a safety guarantee.
 
-Workflow alone must NEVER block or ask_user, even when explicitly required by a
+Workflow alone must NEVER block, even when explicitly required by a
 human, assignment or system instruction, or summarized as Forbidden/Guardrails.
 This includes planning/approval before ordinary implementation, read-before-edit,
 test sequencing (even before an authorized deployment), preferred tools,
@@ -41,24 +41,18 @@ judge interpretation, not deterministic fast paths, and cannot change the
 no-workflow remit, consent provenance, verdict schema or active hard guards.
 Deterministic controls remain `policy.readAllowlist`, guards and
 `policy.trustedTools` (an ordinary-review exemption, not a general ACL).
-See the [single configuration reference](../README.md#configuration-reference).
+See the [configuration reference](../README.md#configuration).
 
 With auto-mode OFF, a guard review checks ONLY actual effects under the active
 read-only/remote-read-only guards. It does not reactivate ordinary safety, consent
 or workflow/policy review. OFF guards impose no restriction.
 
-The judge emits exact JSON `{ "decision": "allow" | "block" | "ask_user",
-"reason": "short explanation" }`. Block returns immediately to the agent, without
-UI; ask_user requests eligible exact-call approval, never an active-guard override.
-Only in-remit hazards, protected boundaries and guard conflicts can block;
-missing human authorization for a safety-sensitive effect can ask_user.
-Workflow alone cannot do either; uncertainty is not a hazard.
-Malformed verdicts and unavailable review are technical failures, not semantic
-unsafe decisions. Eligible complete calls may still receive informed approval
-outside guards. Refusals retain the short judge reason, including user Block,
-cancellation and timeout, with an explicit “Blocked — tool was not run.” notice. Steering prefers a
-safe reason-resolving alternative or other unblocked work while the user is away,
-forbids guard bypasses/unchanged retries, and asks only when no safe path remains.
+The tool gate accepts only `allow` or `block`: a typed classifier choice or a
+structured chat verdict. Cascade decisions are classifier-only. In-remit hazards,
+protected boundaries, guard conflicts and missing required human authorization can block. Workflow alone cannot block. Missing or invalid verdicts
+fail closed without a tool approval prompt. Refusals report “Blocked — tool was not
+run.” Steering prefers a safe alternative or other unblocked work, forbids guard
+bypasses and unchanged retries, and asks only when no safe path remains.
 
 ## Human inputs
 
@@ -142,7 +136,7 @@ of rolling summaries. Assignment/instruction claims cannot create human consent.
 
 Both guard booleans travel with each child; false imposes nothing. Active inherited
 guards remain floors; dropped guards/stale snapshots produce
-`technicalStop: "delegated-context"`, not an ordinary policy approval. The snapshot
+`technicalStop: "delegated-context"`, not an ordinary policy verdict. The snapshot
 is trusted-extension evidence, not OS isolation, and reaches the judge rather than
 the child prompt. No-adapter/unmarked sessions cannot reveal hidden parents. There
 are no live parent revocations, transported images/upstream questionnaire receipts
@@ -171,9 +165,8 @@ Unsummarized human/task inputs are never silently clipped or omitted: dropping a
 middle message could retain a grant while losing its revocation. Summary failure
 falls back to the complete chronological stream, not first-plus-recent selection.
 If that raw stream exceeds 384k characters, model review fails rather than
-presenting incomplete authorization evidence. In ordinary TUI auto-mode this
-technical failure can offer informed one-call approval with complete arguments;
-it is not an automatic allow. Hard guards and noninteractive sessions fail closed. Tool history can shrink independently;
+presenting incomplete authorization evidence. Required review failures block in
+all session modes. Tool history can shrink independently;
 provider token limits still apply to the complete rendered prompt. Reload restores
 completed exact-source summaries from the selected branch, never pending work.
 It does not delete human-input receipts. Required summary/authorization session

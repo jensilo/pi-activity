@@ -51,7 +51,7 @@ function headerValue(headers: unknown, key: string): unknown {
   return Object.entries(headers).find(([name]) => name.toLowerCase() === key)?.[1];
 }
 
-/** Server Retry-After is a minimum wait; only the total deadline bounds it. */
+/** Server Retry-After is a minimum wait. Cancellation can interrupt it. */
 export function retryAfterMs(error: unknown, now = Date.now()): number | undefined {
   if (!error || typeof error !== "object") return undefined;
   const raw = error as { retryAfterMs?: unknown; retryAfter?: unknown; headers?: unknown; response?: { headers?: unknown } };
@@ -77,7 +77,7 @@ export function retryDelayMs(retry: number, error?: unknown, random = Math.rando
 const TRANSIENT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN", "EAGAIN"]);
 
 /** Positive transient evidence only; malformed contracts, auth and config do not retry. */
-export function transientFailure(error: unknown): boolean {
+export function classifierTransientFailure(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const raw = error as { status?: unknown; statusCode?: unknown; code?: unknown; message?: unknown; cause?: unknown };
   const message = typeof raw.message === "string" ? raw.message : "";
@@ -92,19 +92,41 @@ export function transientFailure(error: unknown): boolean {
   return /\b(?:408|429|500|502|503|504|520|524)\b|rate[_ -]?limit|too many requests|service(?: is)?(?: temporarily)? unavailable|overloaded|server[_ -]?(?:busy|error)|internal[_ -]?(?:server[_ -]?)?error|model is at capacity|connection[_ -]?(?:reset|refused|lost|error)|socket hang up|fetch failed|network[_ -]?error|upstream[_ -]?(?:request[_ -]?failed|stream[_ -]?read[_ -]?error)|stream (?:was interrupted|disconnected before completion)|request timed out/i.test(message);
 }
 
+const PROVIDER_TRANSIENT_CODES = new Set([...TRANSIENT_CODES, "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET"]);
+
+/** Positive transient evidence only; malformed contracts, auth and config do not retry. */
+export function transientFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const raw = error as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown; message?: unknown; cause?: unknown };
+  const message = typeof raw.message === "string" ? raw.message : "";
+  if (error instanceof SyntaxError || /insufficient[_ ]quota|quota exceeded|billing|out of budget|usage[_ -]?limit|available balance|invalid (?:api key|configuration)|unauthorized|forbidden|schema|identity|incompatible|malformed/i.test(message)) return false;
+  const status = raw.status ?? raw.statusCode;
+  if (typeof status === "number") return status === 408 || status === 429 || (status >= 500 && status <= 599);
+  if (raw.name === "TimeoutError" || raw.name === "APIConnectionTimeoutError") return true;
+  if (typeof raw.code === "string" && PROVIDER_TRANSIENT_CODES.has(raw.code)) return true;
+  if (raw.cause && raw.cause !== error && typeof raw.cause === "object") {
+    const causeCode = (raw.cause as { code?: unknown }).code;
+    if (typeof causeCode === "string" && PROVIDER_TRANSIENT_CODES.has(causeCode)) return true;
+  }
+  return /\b(?:408|429|500|502|503|504|520|524)\b|rate[_ -]?limit|too many requests|service(?: is)?(?: temporarily)? unavailable|overloaded|server[_ -]?(?:busy|error)|internal[_ -]?(?:server[_ -]?)?error|model is at capacity|connection[_ -]?(?:reset|refused|lost|error)|socket hang up|fetch failed|network[_ -]?error|upstream[_ -]?(?:request[_ -]?failed|stream[_ -]?read[_ -]?error)|stream (?:was interrupted|disconnected before completion)|(?:request|connection|headers|body|fetch) timed out/i.test(message);
+}
+
 export async function retryOperation<T>(
   operation: (signal: AbortSignal, remainingMs: number, attempt: number) => Promise<T>,
   options: {
     signal?: AbortSignal;
     expiresAt?: number;
+    retryOffset?: number;
     shouldRetry: (error: unknown) => boolean;
     onRetry?: (error: unknown, retry: number, delayMs: number) => void;
   },
 ): Promise<T> {
-  const expiresAt = Math.min(options.expiresAt ?? Infinity, Date.now() + TOTAL_RETRY_MS);
+  const expiresAt = options.expiresAt ?? Infinity;
   const deadline = new AbortController();
   const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal;
-  const timer = setTimeout(() => deadline.abort(new RetryDeadlineError()), Math.max(0, expiresAt - Date.now()));
+  const timer = Number.isFinite(expiresAt)
+    ? setTimeout(() => deadline.abort(new RetryDeadlineError()), Math.max(0, expiresAt - Date.now()))
+    : undefined;
   const check = () => {
     signal.throwIfAborted();
     if (Date.now() >= expiresAt) {
@@ -121,17 +143,18 @@ export async function retryOperation<T>(
         return result;
       } catch (error) {
         check();
-        if (index >= MAX_TRANSIENT_RETRIES || !options.shouldRetry(error)) throw error;
-        const delay = retryDelayMs(index + 1, error);
-        options.onRetry?.(error, index + 1, delay);
+        const retry = (options.retryOffset ?? 0) + index + 1;
+        if (retry > MAX_TRANSIENT_RETRIES || !options.shouldRetry(error)) throw error;
+        const delay = retryDelayMs(retry, error);
+        options.onRetry?.(error, retry, delay);
         const retryAt = Date.now() + delay;
         do {
-          await abortableDelay(Math.max(0, Math.min(retryAt, expiresAt) - Date.now()), signal);
+          await abortableDelay(Math.min(2_147_483_647, Math.max(0, Math.min(retryAt, expiresAt) - Date.now())), signal);
           check(); // An oversized server floor expires the budget, never retries early.
         } while (Date.now() < retryAt); // Timers may round a fractional delay down.
       }
     }
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
   }
 }

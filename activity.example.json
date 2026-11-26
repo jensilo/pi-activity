@@ -1,3 +1,4 @@
 {
-  "acclass": { "enabled": true, "variant": "q8" }
+  "acclass": { "enabled": true, "variant": "q8" },
+  "auto": { "judgeModel": null }
 }

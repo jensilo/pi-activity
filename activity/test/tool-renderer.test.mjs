@@ -33,7 +33,7 @@ mkdirSync(process.env.HOME);
 mkdirSync(join(dir, "config"));
 writeFileSync(join(dir, "synthetic.txt"), "before\n");
 writeFileSync(join(dir, "config/activity.json"), JSON.stringify({
-  acclass: { enabled: false }, auto: { judgeModel: null }, display: { enabled: false },
+  acclass: { enabled: false }, auto: { judgeBackend: "classifier", judgeModel: null }, display: { enabled: false },
   session: { persistModes: false, persistActivity: false }, log: { enabled: false }, reviewLog: { enabled: false },
 }));
 const editArgs = { path: "synthetic.txt", edits: [{ oldText: "before", newText: "after" }] };
@@ -75,7 +75,7 @@ try {
   assert.equal(blocked?.block, true);
   assert.match(blocked.reason, /^↑ Blocked — tool was not run\.\n/);
   assert.doesNotMatch(blocked.reason, /NOT EXECUTED/);
-  assert.match(blocked.reason, /judge disabled or no current chat model available/, "the original unavailable-review reason remains visible");
+  assert.match(blocked.reason, /no classifier judge configured/, "the original unavailable-review reason remains visible");
   const refusal = { content: [{ type: "text", text: blocked.reason }], isError: true, details: undefined };
 
   // Ordinary execution errors are not Activity's concern. Its observational
@@ -185,7 +185,7 @@ try {
       }
       for (const text of Object.values(rowText(definitions.edit, refusal))) {
         assert.match(text, /Blocked — tool was not run\./);
-        assert.match(text, /judge disabled or no current chat model available/, "native row displays the original blocked reason");
+        assert.match(text, /no classifier judge configured/, "native row displays the original blocked reason");
       }
       const replayResult = resumed ? session.messages.at(-1) : success;
       for (const text of Object.values(rowText(definitions.edit, replayResult))) {

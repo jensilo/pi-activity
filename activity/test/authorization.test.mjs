@@ -40,11 +40,10 @@ function assertPrecedence(system) {
 }
 function assertJudge(system) {
   assert.ok(system.length < 6_500, "judge SYSTEM stays compact, including delegated provenance");
-  assert.match(system, /only obstacle is missing consent/);
-  assert.match(system, /use ask_user rather than block/);
+  assert.match(system, /missing consequential authorization required for this call/);
   assert.match(system, /Default to ALLOW/);
   assert.match(system, /Deny ONLY for:/);
-  assert.match(system, /Workflow alone must NEVER block or ask_user/);
+  assert.match(system, /Workflow alone must NEVER block/);
   assert.match(system, /explicit protected access\/privacy\/mutation boundaries/);
   assert.doesNotMatch(system, /explicit applicable prerequisite is POLICY/);
   assert.match(system, /ONLY when read-only is ON/);

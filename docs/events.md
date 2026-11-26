@@ -94,8 +94,8 @@ These are the effective modes, including guards set in the configuration file.
   like other custom calls.
 - A subagent extension must forward `--read-only` and `--remote-read-only`. It must
   also prevent per-call guard opt-outs.
-- `herdr:blocked` is an optional notification for UI consumers. It does not
-  authorize anything.
+- Activity no longer emits `herdr:blocked` for tool review; the approval dialog
+  has been removed.
 
 ## Classifier telemetry
 
@@ -114,7 +114,7 @@ independent:
 ## Judge telemetry
 
 Activity counts these separately: judge starts, retries, fallback use, observed
-requests, answers, generated summaries, summary cache hits and approval choices.
+requests, answers, generated summaries and summary cache hits.
 
 - The configured model and the model that gets the request can differ for virtual
   models.
@@ -124,16 +124,12 @@ requests, answers, generated summaries, summary cache hits and approval choices.
 - Unknown counts and costs show as unknown, not as zero.
 - Timing samples are limited. They do not guarantee performance.
 
-## Approval counts
+## Historical approvals and user evidence
 
-An Allow counts as an override only if both conditions are true:
-
-1. The call is still valid after the checks for cancellation, mode and session.
-2. The arguments still match what the dialog showed.
-
-A tool failure after Allow is an execution error, not a second block. A summary is
-generated text. It never counts as your consent. A questionnaire record needs a
-trusted source, the exact pending input and valid answers.
+Old records can still contain tool approval counts and the `user-override` route.
+New tool decisions never use that route. A summary is generated text, not human
+consent. A questionnaire record needs a trusted source, the exact pending input
+and valid answers.
 
 ## Limits
 

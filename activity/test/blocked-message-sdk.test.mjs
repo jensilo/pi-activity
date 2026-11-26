@@ -18,7 +18,7 @@ for (const [key, value] of Object.entries(overrides)) {
 mkdirSync(process.env.HOME);
 mkdirSync(join(dir, "config"));
 writeFileSync(join(dir, "config/activity.json"), JSON.stringify({
-  acclass: { enabled: false }, auto: { judgeModel: null }, guards: { readOnly: true },
+  acclass: { enabled: false }, auto: { judgeBackend: "classifier", judgeModel: null }, guards: { readOnly: true },
   session: { persistModes: true, persistActivity: false },
   log: { enabled: false }, reviewLog: { enabled: false },
 }));
@@ -30,7 +30,7 @@ const calls = ["first", "second"].map((word) => ({ type: "toolCall", id: `blocke
 const notice = "Blocked — tool was not run.";
 // Hard read-only requires a compliant review. An explicitly disabled judge fails
 // closed without dispatching a review request or reading credentials.
-const originalReason = "Safety review unavailable (technical failure): judge disabled or no current chat model available. Set auto.judgeModel to provider/model, or omit it to use the current chat model.";
+const originalReason = "Safety review unavailable: no classifier judge configured. Set auto.judgeModel to a registered classifier provider/model.";
 const guidance = "Continue with a safe alternative that resolves this reason, or other unblocked work; prefer progress when the user is away. Do not bypass guards or retry unchanged. Ask only when no safe path remains.";
 const provider = "blocked-message-sdk-fixture";
 const model = { provider, id: "main", name: "Synthetic blocked message fixture", api: "synthetic-blocked-sdk", baseUrl: "",

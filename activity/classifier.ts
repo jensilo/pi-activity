@@ -22,7 +22,7 @@ import { isDeepStrictEqual } from "node:util";
 import { HEADS, type Head, type Primitives, type ScopeReport } from "./policy.js";
 import { serializeActionCall } from "./action-classifier.js";
 import type { ReviewToolMetadata } from "./context.js";
-import { abortableTask, retryOperation, transientFailure } from "./retry.js";
+import { abortableTask, classifierTransientFailure, retryOperation, TOTAL_RETRY_MS } from "./retry.js";
 
 export type ClassifierDevice = "auto" | "cpu" | "cuda" | "metal";
 
@@ -309,14 +309,15 @@ export class Classifier {
       const raw = response as Record<string, unknown>;
       if (typeof raw.error === "string") {
         const error = Object.assign(new Error(raw.error), { status: raw.status, code: raw.code, retryAfterMs: raw.retry_after_ms });
-        if (transientFailure(error)) throw Object.assign(error, { classifierTransport: true });
+        if (classifierTransientFailure(error)) throw Object.assign(error, { classifierTransport: true });
       }
       return response;
     }, {
       signal,
+      expiresAt: Date.now() + TOTAL_RETRY_MS,
       shouldRetry: (error) => {
         this.checkGeneration(generation);
-        return !!(error && typeof error === "object" && "classifierTransport" in error && error.classifierTransport && transientFailure(error));
+        return !!(error && typeof error === "object" && "classifierTransport" in error && error.classifierTransport && classifierTransientFailure(error));
       },
     });
   }

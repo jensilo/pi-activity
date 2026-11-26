@@ -11,7 +11,6 @@ import { ActivityObservations } from "../observations.ts";
 import { Classifier } from "../classifier.ts";
 import { OBSERVATION_ENTRY_TYPE } from "../version.ts";
 import { classification, withNativeTools } from "./nine-head-fixtures.mjs";
-import { approvalFixture } from "./approval-fixture.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "activity-ui-accounting-"));
 const oldDir = process.env.PI_CODING_AGENT_DIR;
@@ -46,7 +45,7 @@ const ctx = {
   ui: { theme: { fg: (_color, text) => text }, notify(text) { notifications.push(text); },
     setStatus(key, text) { statuses.push({ key, text }); } },
 };
-let verdict = true, reviewCalls = 0;
+let verdict = "allow", reviewCalls = 0;
 let reviewImpl = async (...args) => {
   reviewCalls++;
   args[7]?.({ retry: 1, cause: "transient error" });
@@ -55,7 +54,8 @@ let reviewImpl = async (...args) => {
   args[13]?.({ status: "generated", coveredMessages: 5, wallMs: 7 });
   args[13]?.({ status: "generated", coveredMessages: 5, wallMs: 8 });
   args[14]?.onModelCall?.({ operation: "judge", kind: "provider-request", attempt: 1, provider: "physical", model: "judge", evidence: "injected" });
-  return { ok: true, allow: verdict, decision: verdict ? "allow" : "ask_user", reason: verdict ? "synthetic safe" : "synthetic denied" };
+  return verdict === "unavailable" ? { ok: false, reason: "synthetic unavailable" }
+    : { ok: true, allow: verdict === "allow", decision: verdict, reason: "synthetic verdict" };
 };
 activityExtension(pi, (...args) => reviewImpl(...args), "native");
 const snapshot = () => entries.findLast((entry) => entry.customType === OBSERVATION_ENTRY_TYPE)?.data;
@@ -107,14 +107,14 @@ try {
   assert.equal(snapshot().telemetry.classifier.inference.sumMs, 3 * (reviewCalls + 1), "inference timing is distinct from provider wall time");
   assert.equal(snapshot().telemetry.classifier.endToEnd.count, reviewCalls + 1);
   const liveStatus = statuses.findLast(({ key, text }) => key === "activity-judge" && text)?.text;
-  assert.match(liveStatus, /^🛡️ · files:.*⚖️ judge \d+s elapsed · \d+s left/);
+  assert.match(liveStatus, /^🛡️ · files:.*⚖️ judge \d+s elapsed/);
   assert.equal((liveStatus.match(/s elapsed/g) ?? []).length, 1, "elapsed appears only once");
   assert.equal(snapshot().guardWaitPending, 0, "the final gate checkpoint closes waiting before execution");
   assert.ok(snapshot().telemetry.guardWait.wallMs > 0);
   assert.equal(snapshot().telemetry.guardWait.coverage, "complete");
   assert.ok(statuses.some(({ key, text }) => key === "activity-judge" && /retry 1\/5/.test(text ?? "")));
 
-  verdict = false;
+  verdict = "block";
   ctx.mode = "print";
   const denied = event("catalog", {});
   assert.equal((await gate(denied))?.block, true);
@@ -133,19 +133,14 @@ try {
   await commands["read-only"]("off", ctx);
   assert.equal(snapshot().totals.blocked, 4, "invalid evidence, hard file guard and judge-denied delegation all counted");
 
+  verdict = "unavailable";
   ctx.mode = "tui";
-  ctx.ui.custom = approvalFixture(ctx, (done) => done("Allow"));
-  const override = event("catalog", {});
-  assert.equal((await gate(override))?.block, undefined);
-  await finish(override);
-  assert.equal(snapshot().telemetry.approvals.prompts, 1);
-  assert.equal(snapshot().telemetry.approvals.choices.allow, 1);
-  assert.equal(snapshot().telemetry.approvals.effectiveOverrides, 1);
-  ctx.ui.custom = approvalFixture(ctx, async (done) => { await commands["read-only"]("on", ctx); done("Allow"); });
+  let prompts = 0;
+  ctx.ui.custom = () => { prompts++; throw new Error("unexpected approval"); };
   assert.equal((await gate(event("catalog", {})))?.block, true);
-  assert.equal(snapshot().telemetry.approvals.choices.allow, 2);
-  assert.equal(snapshot().telemetry.approvals.effectiveOverrides, 1, "choice is not an override when a guard changes");
-  await commands["read-only"]("off", ctx);
+  assert.equal(prompts, 0);
+  assert.equal(snapshot().telemetry.approvals.prompts, 0);
+  assert.equal(snapshot().telemetry.approvals.effectiveOverrides, 0);
 
   // Real installed pipeline: validation, block and abort do not enter afterToolCall.
   const inert = { name: "bash", description: "Synthetic inert tool", parameters: Type.Object({ command: Type.String() }),
@@ -237,7 +232,7 @@ try {
   const widget = statusWidget.factory({}, ctx.ui.theme);
   for (const width of [0, 1, 24, 80, 110, 180]) assert.ok(widget.render(width).every((line) => visibleWidth(line) <= width));
   const row = widget.render(180)[0];
-  assert.match(row, /^🛡️ · files:.*⚖️ judge \d+s elapsed · \d+s left.*×2/);
+  assert.match(row, /^🛡️ · files:.*⚖️ judge \d+s elapsed.*×2/);
   assert.equal(visibleWidth(row), 180, "the dedicated activity row retains right alignment, unlike sanitized status text");
   assert.equal((row.match(/s elapsed/g) ?? []).length, 1);
   assert.equal(statuses.findLast(({ key }) => key === "activity")?.text, undefined, "widget path clears only activity-owned status lines");
@@ -254,7 +249,7 @@ try {
   while (!releases.length) await new Promise((resolve) => setTimeout(resolve, 1));
   await handlers.session_shutdown({}, ctx);
   assert.equal(widgets.at(-1).factory, undefined, "shutdown removes only the activity widget");
-  assert.equal((await quitting)?.block, true, "shutdown cancels pending deadlines immediately");
+  assert.equal((await quitting)?.block, true, "shutdown cancels pending judges immediately");
   assert.equal(statuses.findLast(({ key }) => key === "activity-judge")?.text, undefined);
   assert.equal(statuses.findLast(({ key }) => key === "activity")?.text, undefined);
   releases[0]({ ok: true, allow: true, reason: "late shutdown allow" });

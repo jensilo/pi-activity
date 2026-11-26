@@ -7,7 +7,6 @@ import activityExtension, { setFixtureProvider } from "./synthetic-runtime.mjs";
 import { DEFAULT_CONFIG, loadActivityConfig } from "../index.ts";
 import { Classifier } from "../classifier.ts";
 import { classification, facts, createFixtureProvider, withNativeTools } from "./nine-head-fixtures.mjs";
-import { approvalFixture } from "./approval-fixture.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "activity-inline-policy-gate-"));
 const cwd = join(root, "project");
@@ -35,7 +34,7 @@ let cases = 0, id = 0;
 async function harness(options = {}) {
   rmSync(localConfig, { force: true });
   rmSync(projectConfig, { force: true });
-  const cfg = { acclass: setFixtureProvider(provider), auto: { judgeModel: "fixture/judge", ...options.autoConfig },
+  const cfg = { acclass: setFixtureProvider(provider), auto: { judgeBackend: "classifier", judgeModel: "fixture/judge", ...options.autoConfig },
     guards: { readOnly: false, remoteReadOnly: false, ...options.guards }, policy: { trustedTools: ["fixture_trusted"] },
     log: { enabled: false }, reviewLog: { enabled: false }, session: { persistActivity: false } };
   writeJson(globalConfig, cfg);
@@ -43,16 +42,23 @@ async function harness(options = {}) {
   let prompts = 0, classifications = 0, providerRequests = 0, executed = 0;
   Classifier.prototype.classify = async () => { classifications++; return classification(options.facts ?? facts({ exposes_secrets: true })); };
   const branch = [{ type: "message", id: "user", message: { role: "user", content: "Inspect synthetic source only." } }];
-  const ctx = { cwd, mode: "tui", hasUI: true,
+  const ctx = { cwd, mode: "tui", hasUI: true, signal: options.signal,
     getSystemPrompt: () => "Synthetic test instructions.",
     sessionManager: { getSessionId: () => "inline-policy-gate", getBranch: () => branch, getEntries: () => branch },
     modelRegistry: {
+      ...(options.classifyDecision ? {
+        findOfType(type, provider, id) {
+          assert.deepEqual([type, provider, id], ["classifier", "fixture", "judge"]);
+          return { type, provider, id, api: "fixture-choice", contextWindow: 32_768 };
+        },
+        classify: options.classifyDecision,
+      } : {}),
       find() { providerRequests++; throw new Error("No real model lookup in synthetic gate tests"); },
       getApiKeyAndHeaders() { providerRequests++; throw new Error("No provider access in synthetic gate tests"); },
     },
     ui: { notify() {}, setStatus() {}, theme: { fg: (_name, text) => text } },
   };
-  ctx.ui.custom = approvalFixture(ctx, (done) => { prompts++; done("Allow"); });
+  ctx.ui.custom = () => { prompts++; throw new Error("unexpected tool approval"); };
   activityExtension({
     on(name, handler) { handlers[name] = handler; }, registerFlag() {}, registerCommand() {},
     getFlag: (name) => name === "auto" && options.auto !== false,
@@ -60,7 +66,7 @@ async function harness(options = {}) {
       { name: "fixture_trusted", sourceInfo: { source: "extension", path: "/synthetic/tool.ts" } },
       { name: "codemode", sourceInfo: { source: "builtin", path: "builtin:codemode" } },
     ]), appendEntry() {}, sendMessage() {}, events: { emit() {} },
-  }, async (...args) => { reviews.push(args); return options.review ? options.review(...args) : yes; }, "native");
+  }, options.classifyDecision ? undefined : async (...args) => { reviews.push(args); return options.review ? options.review(...args) : yes; }, "native");
   await handlers.session_start({ reason: "startup" }, ctx);
   return { cfg, reviews,
     get prompts() { return prompts; }, get classifications() { return classifications; },
@@ -107,6 +113,33 @@ try {
     assert.equal(h.providerRequests, 0);
   });
 
+  const decision = (choice) => ({ provider: "fixture", model: "judge", api: "fixture-choice", stopReason: "stop",
+    answers: { verdict: { type: "choice", choice, confidence: 0.9 } } });
+  for (const judgeMode of [undefined, "short", "cascade"]) {
+    const denyCalls = judgeMode === "cascade" ? 2 : 1;
+    let judgeCalls = 0;
+    await check({ autoConfig: { judgeMode }, classifyDecision: async () => decision(++judgeCalls <= denyCalls ? "block" : "allow") }, async (h) => {
+      const denied = await h.call();
+      blocked(denied);
+      assert.match(denied.reason, /Continue with a safe alternative/);
+      assert.equal(h.prompts, 0);
+      allowed(await h.call("read", { path: "alternate.py" }));
+      assert.equal(judgeCalls, denyCalls + (judgeMode === "cascade" ? 2 : 1));
+      assert.equal(h.providerRequests, 0, "the gate never uses chat lookups for decisions");
+    });
+  }
+  const controller = new AbortController(), dispatch = deferred(), reply = deferred();
+  await check({ autoConfig: { judgeMode: "short" }, signal: controller.signal, classifyDecision: async () => {
+    dispatch.resolve(); await reply.promise; return decision("allow");
+  } }, async (h) => {
+    const pending = h.call();
+    await dispatch.promise;
+    controller.abort();
+    reply.resolve();
+    blocked(await pending);
+    assert.equal(h.prompts, 0);
+  });
+
   const first = "\ufeff# Synthetic ordinary policy\r\nPreserve café and trailing whitespace.  \n";
   const second = "Updated synthetic inline policy.";
   await check({ autoConfig: { judgeInstructions: first } }, async (h) => {
@@ -117,9 +150,9 @@ try {
     assert.equal(h.reviews[1][14].judgeInstructions, second, "next admission rereads global inline text");
   });
 
-  // No stale allow, block or ask_user verdict may authorize a changed policy.
+  // No stale judge verdict may authorize a changed policy.
   for (const update of [{ judgeInstructions: second }, { judgeInstructions: "" }, { judgeInstructions: null }, { judgePromptFiles: [] }]) {
-    for (const verdict of [yes, no, { ...no, decision: "ask_user" }]) {
+    for (const verdict of [yes, no]) {
       const started = deferred(), finished = deferred();
       await check({ autoConfig: { judgeInstructions: first }, review: async () => { started.resolve(); return finished.promise; } }, async (h) => {
         const pending = h.call();
@@ -170,7 +203,7 @@ try {
     assert.equal(h.prompts, 0);
   });
   await check({ auto: false, autoConfig: { judgeInstructions: first }, guards: { remoteReadOnly: true },
-    facts: facts({ remote_state_change: true }), review: async () => ({ ...no, decision: "ask_user" }) }, async (h) => {
+    facts: facts({ remote_state_change: true }), review: async () => no }, async (h) => {
     blocked(await h.call("bash", { command: "synthetic remote mutation" }));
     assert.equal(h.classifications, 1);
     assert.equal(h.reviews[0][14].judgeInstructions, first, "guard remit is carried separately from configured instructions");

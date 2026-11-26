@@ -345,7 +345,7 @@ export function createAcclassSetup(dependencies: AcclassSetupDependencies = {}) 
         const request: AcclassConsent = { version: ACCLASS_VERSION, variant: settings.variant, manifestUrl: ACCLASS_MANIFEST_URL,
           message: `Download and install acclass ${ACCLASS_VERSION} (${settings.variant} model) over the network from ${ACCLASS_MANIFEST_URL}? ` +
             "Activity downloads the installer and verifies it against a pinned SHA-256 hash before running it. " +
-            "If declined or unavailable, Activity uses the LLM judge fallback." };
+            "If declined or unavailable, calls that need review use the configured decision judge or stay blocked." };
         if (!consent || await consent(request) !== true) return fallback("declined");
         signal?.throwIfAborted();
         const digest = await preflight(fetcher, settings.variant, signal);

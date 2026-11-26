@@ -210,7 +210,7 @@ async function runLive() {
     ctx.modelRegistry.streamSimple = (reviewModel, context, options) => {
       assert.ok(providerCalls < 8, "activity model dispatch budget exhausted");
       assert.equal(context.messages.length, 1);
-      assert.ok(context.systemPrompt.includes("Workflow alone must NEVER block or ask_user"));
+      assert.ok(context.systemPrompt.includes("Workflow alone must NEVER block"));
       assert.ok(context.messages[0].content[0].text.includes(userText));
       assert.equal(context.tools, undefined, "review requests cannot execute tools");
       providerCalls++;

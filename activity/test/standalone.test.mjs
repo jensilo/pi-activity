@@ -8,7 +8,6 @@ import { join } from "node:path";
 import activityExtension, { setFixtureProvider } from "./synthetic-runtime.mjs";
 import { DEFAULT_CONFIG, loadActivityConfig } from "../index.ts";
 import { createEvidenceProvider } from "../evidence-provider.ts";
-import { approvalFixture } from "./approval-fixture.mjs";
 import { createFixtureModel, fixtureIdentity, readyResponse, wireResponse, facts, scores, withNativeTools } from "./nine-head-fixtures.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "pi-activity-standalone-"));
@@ -33,7 +32,7 @@ function harness(verdict = { ok: true, allow: true, reason: "synthetic verdict" 
     sessionManager: { getEntries: () => [], getBranch: () => [], getSessionId: () => "synthetic-standalone" },
     ui: { notify() {}, setStatus() {}, confirm() { setupPrompts++; return false; }, theme: { fg: (_color, text) => text } },
   };
-  ctx.ui.custom = approvalFixture(ctx, (done) => { prompts++; done("Block"); });
+  ctx.ui.custom = () => { prompts++; throw new Error("unexpected tool approval"); };
   activityExtension({
     on(name, handler) { handlers[name] = handler; },
     registerFlag() {}, registerCommand(name, options) { commands[name] = options.handler; },
@@ -84,6 +83,10 @@ try {
     { acclass: { enabled: true, variant: "unknown" } },
     { acclass: { enabled: false, binary: "/synthetic/forbidden" } },
     { auto: { judgeModel: "" } }, { auto: { judgeThinking: "unknown" } },
+    { auto: { judgeBackend: "classifier", judgeModel: "bare" } },
+    { auto: { judgeMode: "cascade", fallbackJudgeModel: "bare" } },
+    { auto: { judgeBackend: "unknown" } },
+    { auto: { fallbackSummaryModel: " " } },
     { policy: { readAllowlist: [null] } }, { history: { maxEntries: -1 } },
     { guards: { readOnly: "false" } },
   ]) {
@@ -91,7 +94,11 @@ try {
     assert.throws(() => loadActivityConfig(cwd), /activity/);
   }
 
-  writeConfig({ auto: { judgeModel: null } });
+  writeConfig({ auto: { judgeBackend: "chat", judgeModel: "fixture/chat" } });
+  assert.equal(loadActivityConfig(cwd).auto.judgeModel, "fixture/chat");
+  writeConfig({ auto: { judgeBackend: "chat", judgeMode: "cascade" } });
+  assert.throws(() => loadActivityConfig(cwd), /cascade requires the classifier judgeBackend/);
+  writeConfig({ auto: { judgeBackend: "classifier", judgeMode: "cascade", judgeModel: null } });
   const native = harness();
   native.ctx.mode = "rpc";
   await native.start();
@@ -122,37 +129,33 @@ try {
   try {
     assert.equal(loadActivityConfig(cwd).acclass.enabled, true);
     assert.equal(inherited.setupPrompts, 0, "injected evidence skips managed setup even when enabled by default");
-    assert.notEqual((await inherited.call("bash", { command: "printf synthetic" }))?.block, true);
-    assert.equal(inherited.reviews[0][1], "fixture/current-chat", "omitted judge uses ctx.model");
-    assert.equal(inherited.reviews[0][12], "fixture/current-chat", "summary follows the effective current-model judge");
-    inherited.ctx.model = { provider: "fixture", id: "next-chat" };
+    assert.notEqual((await inherited.call("read", { path: "README.md" }))?.block, true);
     assert.notEqual((await inherited.call("custom", {}))?.block, true);
-    assert.equal(inherited.reviews[1][1], "fixture/next-chat", "current model selection is evaluated per call");
-    inherited.ctx.model = undefined;
-    inherited.ctx.mode = "rpc";
-    assert.equal((await inherited.call("custom", {}))?.block, true, "missing current model fails closed");
-    assert.equal(inherited.reviews.length, 2);
+    assert.equal(inherited.reviews.length, 1, "omission uses the current chat model");
+    assert.equal(inherited.reviews[0][1], "fixture/current-chat");
+    assert.equal(inherited.reviews[0][14].judgeBackend, "chat");
+    assert.equal(inherited.prompts, 0);
   } finally { await inherited.stop(); }
 
-  writeConfig({ auto: { judgeModel: "fixture/judge" } });
+  writeConfig({ auto: { judgeBackend: "classifier", judgeModel: "fixture/judge" } });
   const reviewed = harness();
   await reviewed.start();
   try {
     assert.notEqual((await reviewed.call("bash", { command: "printf synthetic" }))?.block, true);
     assert.equal(reviewed.reviews[0][1], "fixture/judge");
-    assert.equal(reviewed.reviews[0][14].judgeThinking, "off");
-    assert.equal(reviewed.reviews[0][12], "fixture/judge", "summary follows explicit judge");
+    assert.equal(reviewed.reviews[0][14].judgeBackend, "classifier");
+    assert.equal(reviewed.reviews[0][12], undefined, "a classifier ref is never sent to the chat summarizer");
     assert.equal(reviewed.reviews[0][10], undefined, "there is no implicit fallback");
-    writeConfig({ auto: { judgeModel: "fixture/judge:low", judgeThinking: "high",
+    writeConfig({ auto: { judgeBackend: "classifier", judgeModel: "fixture/judge:low", judgeThinking: "high",
       summaryModel: "fixture/summary", summaryThinking: "minimal",
-      fallbackJudgeModel: "fixture/fallback", fallbackJudgeThinking: "medium" } });
+      fallbackJudgeModel: "fixture/fallback", fallbackJudgeThinking: "medium", fallbackSummaryModel: "fixture/summary-fallback" } });
     assert.notEqual((await reviewed.call("custom", { key: "synthetic" }))?.block, true);
     assert.equal(reviewed.reviews[1][1], "fixture/judge:low", "a colon in the model id remains exact");
-    assert.equal(reviewed.reviews[1][14].judgeThinking, "high", "thinking is independent of the model id");
+    assert.equal(reviewed.reviews[1][14].judgeThinking, undefined, "legacy judge thinking does not affect decisions");
     assert.equal(reviewed.reviews[1][12], "fixture/summary");
     assert.equal(reviewed.reviews[1][14].summaryThinking, "minimal");
     assert.equal(reviewed.reviews[1][10], "fixture/fallback");
-    assert.equal(reviewed.reviews[1][14].fallbackJudgeThinking, "medium");
+    assert.equal(reviewed.reviews[1][14].fallbackSummaryModel, "fixture/summary-fallback");
     const before = reviewed.reviews.length;
     for (const guard of ["read-only", "remote-read-only"]) {
       await reviewed.commands[guard]("on", reviewed.ctx);
@@ -176,7 +179,7 @@ try {
     writeConfig({ policy: { trustedTools: ["explicitly_trusted"] }, auto: { judgeModel: null } });
     assert.notEqual((await reviewed.call("explicitly_trusted", {}))?.block, true);
     assert.equal((await reviewed.call("ask_user_question", {}))?.block, true);
-    assert.equal(reviewed.prompts, 1, "missing-judge TUI denial opens the inline approval exactly once");
+    assert.equal(reviewed.prompts, 0, "missing-judge TUI denial does not prompt");
   } finally { await reviewed.stop(); }
 
   for (const verdict of [{ ok: true, allow: false, reason: "guard compliance not established" },
@@ -322,11 +325,12 @@ try {
   } finally { await classified.stop(); }
 
   // Keep metadata checks last so runtime coverage still runs during metadata updates.
-  assert.deepEqual(example, { acclass: DEFAULT_CONFIG.acclass }, "published example contains only the brief managed settings");
+  assert.deepEqual(example, { acclass: DEFAULT_CONFIG.acclass, auto: { judgeModel: null } });
   assert.deepEqual(schema.properties.classifier.not, {}, "public classifier configuration is forbidden");
   assert.equal(schema.properties.acclass.properties.enabled.default, true);
   assert.deepEqual(schema.properties.acclass.properties.variant.enum, ["q8", "q5", "fp32"]);
-  assert.equal(schema.properties.auto.properties.judgeModel.default, undefined, "omission follows the current chat model");
+  assert.deepEqual(schema.properties.auto.properties.judgeBackend.enum, ["chat", "classifier"]);
+  assert.equal(schema.properties.auto.properties.judgeModel.default, undefined, "the judge model defaults depend on the backend");
   console.log("ok standalone defaults, explicit review routing, deterministic files, hard vetoes and typed optional classifier");
 } finally {
   for (const socket of sockets) socket.destroy();

@@ -42,10 +42,8 @@ const verdict = (allow, decision = allow ? "allow" : "block", summary = "generat
 });
 assert.deepEqual(verdictFailures({ allow: true }, verdict(false)), ["false_refusal"]);
 assert.deepEqual(verdictFailures({ allow: false }, verdict(true)), ["unsafe_allow"]);
-assert.deepEqual(verdictFailures({ allow: false, decision: "ask_user" }, verdict(false)), ["wrong_decision"]);
-assert.deepEqual(verdictFailures({ allow: false }, verdict(false, "ask_user")), ["wrong_decision"],
-  "a prohibition without an explicit disposition still requires block, not an approval question");
-assert.deepEqual(verdictFailures({ allow: false, decision: "ask_user" }, verdict(false, "ask_user")), []);
+assert.deepEqual(verdictFailures({ allow: false }, verdict(false, "allow")), ["wrong_decision"]);
+assert.deepEqual(verdictFailures({ allow: false }, verdict(false, "ask_user")), ["review_unavailable"]);
 assert.deepEqual(verdictFailures({ allow: false }, { ok: false, allow: false, reason: "synthetic timeout" }), ["review_unavailable"]);
 assert.deepEqual(verdictFailures({ allow: true }, undefined), ["review_unavailable"]);
 assert.deepEqual(verdictFailures({ allow: true }, { ok: true }), ["review_unavailable"]);
@@ -68,7 +66,7 @@ for (const summaryFixture of [{ generatedSummary: "synthetic" }, { summarized: t
 const cases = [
   { name: "synthetic false refusal", allow: true },
   { name: "synthetic unsafe allow", allow: false },
-  { name: "synthetic wrong decision", allow: false, decision: "ask_user" },
+  { name: "synthetic wrong decision", allow: false },
   { name: "synthetic summary timeout with correct denial", allow: false, summarized: true },
   { name: "synthetic provider failure", allow: false },
   { name: "synthetic review timeout", allow: false },
@@ -83,7 +81,7 @@ await collectScenarios(cases, report, budget, async () => {
   switch (call++) {
     case 0: return verdict(false);
     case 1: return verdict(true);
-    case 2: return verdict(false);
+    case 2: return verdict(false, "allow");
     case 3: return verdict(false, "block", "timeout");
     case 4: throw new Error("SYNTHETIC_PRIVATE_ERROR_DO_NOT_EMIT");
     case 5: return { ok: false, reason: "SYNTHETIC_PRIVATE_REASON_DO_NOT_EMIT" };

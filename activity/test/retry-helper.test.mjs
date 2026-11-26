@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { mock } from "node:test";
 import { MAX_RETRY_DELAY_MS, MAX_TRANSIENT_RETRIES, TOTAL_RETRY_MS, RetryDeadlineError,
-  retryAfterMs, retryDelayMs, retryOperation, transientFailure } from "../retry.ts";
+  classifierTransientFailure, retryAfterMs, retryDelayMs, retryOperation, transientFailure } from "../retry.ts";
 import { runSafetyReview } from "../judge.ts";
 
 assert.equal(MAX_TRANSIENT_RETRIES, 5);
@@ -71,6 +71,24 @@ for (const error of [new Error("unknown failure"), new Error("malformed 503 resp
   Object.assign(new Error("conflict"), { status: 409 }), Object.assign(new Error("missing artifact"), { code: "ENOENT" }),
   Object.assign(new Error("forbidden"), { status: 503 }), Object.assign(new Error("bad schema"), { status: 503 }),
   Object.assign(new Error("bad request"), { status: 400 })]) assert.equal(transientFailure(error), false);
+
+// Broader provider retry evidence must not leak into the local classifier.
+for (const error of [
+  Object.assign(new Error("synthetic timeout"), { name: "TimeoutError" }),
+  Object.assign(new Error("synthetic timeout"), { name: "APIConnectionTimeoutError" }),
+  ...["UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET"]
+    .flatMap((code) => [
+      Object.assign(new Error("synthetic failure"), { code }),
+      new Error("synthetic failure", { cause: { code } }),
+    ]),
+  ...["connection", "headers", "body", "fetch"].map((phase) => new Error(`${phase} timed out`)),
+  Object.assign(new Error("service unavailable", { cause: { code: "ECONNRESET" } }), { code: "UNKNOWN" }),
+]) {
+  assert.equal(transientFailure(error), true);
+  assert.equal(classifierTransientFailure(error), false);
+}
+assert.equal(classifierTransientFailure(new Error("request timed out")), true);
+assert.equal(classifierTransientFailure(new Error("synthetic failure", { cause: { code: "ECONNRESET" } })), true);
 
 // Cancellation during Retry-After must interrupt the backoff, not launch again.
 const cancelled = new AbortController();

@@ -36,7 +36,7 @@ for (const auto of [true, false]) {
     { auto, readOnly: false, remoteReadOnly: true }, new AbortController().signal,
     undefined, undefined, async (_model, prompt) => {
       reviews++;
-      assert.match(prompt.systemPrompt, /Workflow alone must NEVER block or ask_user/);
+      assert.match(prompt.systemPrompt, /Workflow alone must NEVER block/);
       assert.match(prompt.systemPrompt, /explicit protected access\/privacy\/mutation boundaries/);
       if (auto) assert.match(prompt.systemPrompt, /Do not invent restrictions|Never invent restrictions/);
       assert.match(prompt.systemPrompt, /When auto-mode is OFF, review ONLY active hard-guard effects/);

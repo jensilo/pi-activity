@@ -1,16 +1,14 @@
 import assert from "node:assert/strict";
 import { mock } from "node:test";
-import { INITIAL_REVIEW_MS, MAX_RETRIES, MAX_REVIEW_MS, judgeSafety, runSafetyReview } from "../judge.ts";
+import { MAX_RETRIES, judgeSafety, runSafetyReview } from "../judge.ts";
 import { withDelegation } from "./delegation-fixture.mjs";
 
 assert.equal(MAX_RETRIES, 5);
-assert.equal(MAX_REVIEW_MS, 30_000);
 const live = new AbortController().signal;
 let calls = 0;
 const retries = [];
-const result = await runSafetyReview(async (_signal, timeoutMs) => {
+const result = await runSafetyReview(async () => {
   calls++;
-  assert.ok(timeoutMs > 0 && timeoutMs <= INITIAL_REVIEW_MS, "one fixed deadline, never extended per retry");
   if (calls <= 5) return { ok: false, reason: "503", retryable: true, retryCause: "transient error" };
   return { ok: true, allow: true, reason: "safe" };
 }, live, (event) => retries.push(event));
@@ -55,6 +53,7 @@ const reviewed = await judgeSafety(...reviewArgs, (event) => modelRetries.push(e
   async (_model, _context, options) => {
     modelCalls++;
     assert.equal(options.maxRetries, 0, "provider retries must not escape the shared budget");
+    assert.equal(options.timeoutMs, undefined, "Activity leaves the provider timeout unchanged");
     if (modelCalls <= 5) return output(modelCalls === 1 ? "not json" : "", "error", "503 service unavailable");
     return output('{"decision":"allow","reason":"safe"}');
   });
@@ -377,8 +376,8 @@ for (const throws of [false, true]) {
   assert.equal(httpRetry.allow, true, httpRetry.reason);
   assert.equal(httpAttempts, 2);
 }
-// A full 20-second HTTP floor survives model-policy -> judge -> retry scheduling.
-// Cover both SDK error messages and thrown errors without a real 20-second sleep.
+// A Retry-After longer than the old 30s budget delays rather than expires the judge.
+// Cover both SDK error messages and thrown errors without real sleeps.
 const flushClock = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
 for (const throws of [false, true]) {
   mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
@@ -387,7 +386,7 @@ for (const throws of [false, true]) {
     const observations = [];
     const pending = judgeSafety(...reviewArgs, undefined, undefined, async (model, _prompt, options) => {
       if (++attempts === 1) {
-        await options.onResponse({ status: 429, headers: { "Retry-After": "20" } }, model);
+        await options.onResponse({ status: 429, headers: { "Retry-After": "35" } }, model);
         if (throws) throw new Error("rate limited");
         return output("", "error", "rate limited");
       }
@@ -395,8 +394,8 @@ for (const throws of [false, true]) {
     }, undefined, undefined, undefined, undefined, { onModelCall: (event) => observations.push(event) });
     await flushClock();
     assert.equal(attempts, 1);
-    assert.equal(observations.find((event) => event.kind === "http-response").retryAfterMs, 20_000);
-    mock.timers.tick(19_999);
+    assert.equal(observations.find((event) => event.kind === "http-response").retryAfterMs, 35_000);
+    mock.timers.tick(34_999);
     await flushClock();
     assert.equal(attempts, 1, "judge cannot retry before the server cooldown");
     mock.timers.tick(1);

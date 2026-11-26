@@ -100,7 +100,7 @@ for (const variant of variants) {
     assert.equal(f.calls.consent.length, 1);
     assert.equal(f.calls.consent[0].manifestUrl, ACCLASS_MANIFEST_URL);
     assert.equal(f.calls.consent[0].variant, variant);
-    assert.match(f.calls.consent[0].message, /network.*https:.*LLM judge fallback/);
+    assert.match(f.calls.consent[0].message, /network.*https:.*use the configured decision judge or stay blocked/);
     assert.match(f.calls.consent[0].message, /downloads the installer and verifies it against a pinned SHA-256 hash/);
     assert.equal(f.calls.fetch.length, 2);
     assert.deepEqual(f.calls.fetch.map(([url]) => String(url)), [ACCLASS_MANIFEST_URL, ACCLASS_INSTALLER_URL]);

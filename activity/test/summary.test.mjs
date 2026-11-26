@@ -111,6 +111,16 @@ assert.equal(waiter.metrics.status, "shared");
 assert.equal(owner.metrics.costTotalUsd, 0.001);
 assert.equal(waiter.metrics.costTotalUsd, undefined, "waiting caller must not count the same charge");
 
+const exactCtx = ctx(2, "exact-summary");
+const exactUsers = collectUserMessages(exactCtx);
+let exactBranchReads = 0, exactWrites = 0;
+exactCtx.sessionManager.getBranch = () => { exactBranchReads++; return []; };
+const exactResult = await new RollingUserSummary().prepare(exactCtx, "test/cheap", live, async () => response(),
+  exactUsers, undefined, { guidance: "Test guidance", persist: () => { exactWrites++; } });
+assert.equal(exactResult.metrics.status, "generated");
+assert.equal(exactBranchReads, 0, "exact in-memory summaries need no persistence branch scan");
+assert.equal(exactWrites, 0);
+
 const failureCache = new RollingUserSummary();
 for (const bad of ["bad response", summaryText + "\n## Allowed\nextra", summaryText + "x".repeat(MAX_SUMMARY_CHARS)]) {
   const failed = await failureCache.prepare(ctx(6), "test/cheap", live, async () => response(bad));
@@ -120,6 +130,45 @@ for (const bad of ["bad response", summaryText + "\n## Allowed\nextra", summaryT
 }
 assert.equal((await failureCache.prepare(ctx(6), "test/cheap", live, complete)).metrics.status, "generated",
   "failure must not advance covered state");
+const backupCache = new RollingUserSummary();
+const backupCtx = ctx(6, "summary-with-backup");
+backupCtx.modelRegistry.find = (provider, id) => id === "backup" ? { provider, id, contextWindow: 128_000 } : undefined;
+const backupModels = [{ ref: "test/backup", thinking: "low" }];
+const backup = await backupCache.prepare(backupCtx, "test/missing", live, async (selected, _prompt, options) => {
+  assert.equal(selected.id, "backup");
+  assert.equal(options.reasoning, "low");
+  return response();
+}, undefined, undefined, { fallbackModels: backupModels });
+assert.equal(backup.metrics.status, "generated");
+assert.equal(backup.metrics.providerRequests, 1);
+assert.equal(backup.metrics.model, "backup");
+const cachedBackup = await backupCache.prepare(backupCtx, "test/missing", live);
+assert.equal(cachedBackup.metrics.status, "cached");
+assert.equal(cachedBackup.metrics.providerRequests, 0);
+assert.equal(cachedBackup.metrics.model, "backup");
+const abortedByProvider = await new RollingUserSummary().prepare(backupCtx, "test/backup", live,
+  async selected => {
+    assert.equal(selected.id, "backup");
+    return { ...response(), stopReason: "aborted" };
+  }, undefined, undefined, { fallbackModels: [{ ref: "other/backup" }] });
+assert.equal(abortedByProvider.metrics.status, "failed");
+assert.equal(abortedByProvider.metrics.providerRequests, 1);
+assert.equal(abortedByProvider.providerAbort?.name, "AbortError");
+
+const abortCache = new RollingUserSummary();
+const providerAbort = new DOMException("synthetic provider cancellation", "AbortError");
+const abortComplete = async (selected, _prompt, options) => {
+  options.onResponse({ status: 503 }, selected);
+  throw providerAbort;
+};
+const pendingAborts = await Promise.all([
+  abortCache.prepare(backupCtx, "test/backup", live, abortComplete),
+  abortCache.prepare(backupCtx, "test/backup", live, abortComplete),
+]);
+assert.deepEqual(pendingAborts.map(({ metrics }) => metrics.providerRequests), [1, 0]);
+assert.ok(pendingAborts.every((result) => result.providerAbort === providerAbort),
+  "the owner and its waiters observe the same unwrapped AbortError");
+
 const tooBig = ctx(6, "too-big");
 tooBig.sessionManager.getBranch = () => [user(0, "x".repeat(384_001)), ...Array.from({ length: 5 }, (_, i) => user(i + 1))];
 let oversizedCalls = 0;

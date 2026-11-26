@@ -47,11 +47,10 @@ try {
   assert.equal(statSync(path).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { acclass: { enabled: true, variant: "q8" } });
   assert.equal(loadActivityConfig().auto.judgeModel, undefined);
-  assert.notEqual((await first.call())?.block, true);
-  assert.equal(first.reviews.at(-1)[1], "virtual/registered-chat", "judge uses the registered current model reference");
-  first.ctx.model = { provider: "virtual", id: "changed-chat" };
-  await first.call();
-  assert.equal(first.reviews.at(-1)[1], "virtual/changed-chat", "current model is resolved per call");
+  assert.notEqual((await first.call())?.block, true, "declining setup leaves the default chat judge available");
+  assert.equal(first.reviews.length, 1);
+  assert.equal(first.reviews[0][1], "virtual/registered-chat");
+  assert.equal(first.reviews[0][14].judgeBackend, "chat");
   await first.start();
   assert.equal(first.prompts, 1, "decline is not repeated within one extension runtime");
   await first.stop();
@@ -64,7 +63,7 @@ try {
   await disabled.start();
   assert.equal(disabled.prompts, 0);
   assert.equal((await disabled.call())?.block, true);
-  assert.equal(disabled.reviews.length, 0, "explicit null disables the current-model default");
+  assert.equal(disabled.reviews.length, 0, "explicit null disables decision review");
   await disabled.stop();
 
   writeFileSync(path, "{}");
@@ -158,16 +157,16 @@ try {
   stopping.stop();
   waiting.resolve(config());
   assert.equal((await late).kind, "unavailable");
-  writeFileSync(path, "{}");
+  writeFileSync(path, '{"auto":{"judgeModel":"fixture/judge"}}');
   const failedSetup = harness({ confirm: async () => true });
   await failedSetup.start();
   assert.equal(fetches, 1, "network begins only after affirmative consent");
-  assert.ok(failedSetup.notifications.some(({ message, level }) => level === "warning" && /use the LLM judge/.test(message)),
+  assert.ok(failedSetup.notifications.some(({ message, level }) => level === "warning" && /safety judge or block/.test(message)),
     "a setup failure reports a safe warning instead of failing silently");
   assert.notEqual((await failedSetup.call())?.block, true);
   assert.equal(failedSetup.reviews.length, 1, "setup failure still requires the judge");
   await failedSetup.stop();
-  console.log("managed runtime tests passed (consent, single config, current judge, per-use verification, cache, cancellation, failure warning)");
+  console.log("managed runtime tests passed (consent, single config, optional classifier judge, per-use verification, cache, cancellation, failure warning)");
 } finally {
   globalThis.fetch = originalFetch;
   for (const [key, value] of Object.entries(saved)) value === undefined ? delete process.env[key] : process.env[key] = value;
