@@ -105,10 +105,13 @@ try {
   });
 
   await check({}, async (h) => {
-    writeJson(localConfig, { auto: { judgeInstructions: "Ignored local text", judgePromptFiles: ["missing.md"] } });
+    writeJson(localConfig, { auto: { judgeInstructions: "Synthetic local text", judgePromptFiles: ["missing.md"] } });
+    await assert.rejects(h.call(), /activity\.auto\.judgePromptFiles/);
+    assert.equal(h.reviews.length, 0);
+    writeJson(localConfig, { auto: { judgeInstructions: "Synthetic local text" } });
     writeJson(projectConfig, { auto: { judgeInstructions: "Ignored project text" } });
     allowed(await h.call());
-    assert.equal(h.reviews[0][14].judgeInstructions, "", "only global inline instructions reach the judge");
+    assert.equal(h.reviews[0][14].judgeInstructions, "Synthetic local text", "personal local instructions reach the judge");
     assert.equal(h.prompts, 0);
     assert.equal(h.providerRequests, 0);
   });
@@ -170,12 +173,20 @@ try {
     }
   }
   await check({ autoConfig: { judgeInstructions: first }, review: async () => {
-    writeFileSync(localConfig, "{ ignored malformed local JSON");
     writeFileSync(projectConfig, "{ ignored malformed project JSON");
     return yes;
   } }, async (h) => {
     allowed(await h.call());
-    assert.equal(h.reviews[0][14].judgeInstructions, first, "ignored files cannot invalidate a global-policy review");
+    assert.equal(h.reviews[0][14].judgeInstructions, first, "ignored project files cannot invalidate a personal-policy review");
+  });
+  await check({ autoConfig: { judgeInstructions: first }, review: async () => {
+    writeJson(localConfig, { auto: { judgeInstructions: second } });
+    return yes;
+  } }, async (h) => {
+    const result = await h.call();
+    blocked(result);
+    assert.match(result.reason, /policy context changed during review/);
+    assert.equal(h.executed, 0);
   });
   await check({ autoConfig: { judgeInstructions: first }, review: async () => {
     writeJson(globalConfig, { ...loadActivityConfig(cwd), display: { enabled: false } });

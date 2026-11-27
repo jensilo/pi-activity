@@ -86,15 +86,15 @@ const tierCtx = ctx(6, "registered-tier-target");
 tierCtx.modelRegistry.find = (provider, id) => ({ provider, id, contextWindow: 128_000 });
 const targets = [];
 const targetComplete = async (model, prompt) => { targets.push({ id: model.id, prompt }); return response(); };
-assert.equal((await tierCache.prepare(tierCtx, "tiers/cheap", live, targetComplete)).metrics.status, "generated");
+assert.equal((await tierCache.prepare(tierCtx, "fixture-router/primary", live, targetComplete)).metrics.status, "generated");
 tierCtx.model.provider = "different-chat-provider";
-assert.equal((await tierCache.prepare(tierCtx, "tiers/smart", live, targetComplete, undefined, undefined, { thinking: "high" })).metrics.status, "cached",
+assert.equal((await tierCache.prepare(tierCtx, "fixture-router/secondary", live, targetComplete, undefined, undefined, { thinking: "high" })).metrics.status, "cached",
   "host provider and selected summary model are not cache identity");
 tierCtx.sessionManager.getBranch = () => Array.from({ length: 11 }, (_, i) => user(i));
-assert.equal((await tierCache.prepare(tierCtx, "tiers/smart", live, targetComplete)).summary.coveredMessages, 10);
+assert.equal((await tierCache.prepare(tierCtx, "fixture-router/secondary", live, targetComplete)).summary.coveredMessages, 10);
 assert.match(targets.at(-1).prompt.messages[0].content[0].text, /Previous generated summary/,
   "incremental refresh can carry a prior model's exact-source summary forward");
-assert.deepEqual(targets.map((target) => target.id), ["cheap", "smart"]);
+assert.deepEqual(targets.map((target) => target.id), ["primary", "secondary"]);
 
 const concurrentCache = new RollingUserSummary();
 let release;

@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Classifier } from "../classifier.ts";
+import { blockedGuidance } from "../blocked-message.ts";
 import activityExtension, { setFixtureProvider } from "./synthetic-runtime.mjs";
 import { classification, facts, createFixtureProvider, withNativeTools } from "./nine-head-fixtures.mjs";
 import { ACTION_REPRESENTATION, ACTION_ELIGIBILITY } from "../action-classifier.ts";
@@ -654,6 +655,7 @@ try {
           const blocked = await pending;
           assertBlocked(blocked);
           assert.match(blocked.reason, /safety mode changed/);
+          assert.ok(blocked.reason.endsWith(blockedGuidance("judged")), "an active guard is a policy objection");
           assert.equal(h.approvals.length, 0, "newly enabled guards must not prompt");
         });
     }

@@ -132,10 +132,12 @@ Pi can show an edit preview before Activity blocks the edit. A preview does not
 prove that the edit ran.
 
 There is no tool approval dialog. If the judge cannot complete a required review,
-the call stays blocked. A refusal tells the agent to find a safe alternative or do
-other unblocked work, not to bypass guards or retry the same call, and to ask you
-only if no safe path remains. The separate acclass installation consent dialog is
-unchanged.
+the call stays blocked. The guidance line at the end of a block tells the agent what
+it may do next, and follows why auto mode refused: a judged objection points to a
+safe alternative or other unblocked work; a technical failure judged nothing, so the
+call may be retried or approached differently; and an action auto mode cannot check
+stays blocked until it is configured. The separate acclass installation consent
+dialog is unchanged.
 
 A judge's `allow` applies only to the exact reviewed call and cannot override a
 guard. Activity freezes the reviewed arguments. Extensions that transform arguments

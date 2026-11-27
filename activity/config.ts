@@ -1,7 +1,7 @@
-// Activity has one personal configuration file. Never read project or local layers.
+// Activity reads personal config layers only. Never read project configuration.
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { DEFAULT_ACCLASS } from "./acclass-setup.js";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -10,11 +10,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function deepMerge<T>(base: T, override: unknown): T {
   if (!isPlainObject(base) || !isPlainObject(override)) return override as T;
-  const out: Record<string, unknown> = { ...base };
-  for (const [key, value] of Object.entries(override)) {
-    out[key] = isPlainObject(out[key]) && isPlainObject(value) ? deepMerge(out[key], value) : value;
-  }
-  return out as T;
+  const entries = Object.entries(override).map(([key, value]) =>
+    [key, Object.hasOwn(base, key) ? deepMerge(base[key], value) : value]);
+  // Copy only own keys and define data properties, including for '__proto__'.
+  return { ...base, ...Object.fromEntries(entries) } as T;
 }
 
 export function activityConfigPath(): string {
@@ -32,13 +31,27 @@ export function ensureDefaultActivityConfig(): void {
   }
 }
 
+function readConfigLayer(path: string): Record<string, unknown> | undefined {
+  let text: string;
+  try { text = readFileSync(path, "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(`Cannot read extension config in ${path}`, { cause: error });
+  }
+  let supplied: unknown;
+  try { supplied = JSON.parse(text); }
+  catch (error) { throw new Error(`Invalid extension config JSON in ${path}`, { cause: error }); }
+  if (!isPlainObject(supplied)) throw new Error(`activity config must be an object in ${path}`);
+  return supplied;
+}
+
 export function loadConfig<T>(name: string, defaults: T): T {
   if (name !== "activity") throw new Error(`Invalid config name: ${name}`);
-  const path = activityConfigPath();
-  if (!existsSync(path)) return defaults;
-  let supplied: unknown;
-  try { supplied = JSON.parse(readFileSync(path, "utf8")); }
-  catch (error) { throw new Error(`Invalid extension config JSON in ${path}`, { cause: error }); }
-  if (!isPlainObject(supplied)) throw new Error("activity config must be an object");
-  return deepMerge(defaults, supplied);
+  const basePath = activityConfigPath();
+  let config = defaults;
+  for (const path of [basePath, join(dirname(basePath), "activity.local.json")]) {
+    const layer = readConfigLayer(path);
+    if (layer) config = deepMerge(config, layer);
+  }
+  return config;
 }

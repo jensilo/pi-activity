@@ -10,23 +10,25 @@ It is a guardrail. It is not an OS sandbox, and it does not guarantee safety.
 From npm:
 
 ```sh
-pi install npm:@jensilo/pi-activity@1.0.1
+pi install npm:@jensilo/pi-activity
 ```
 
 Or from GitHub:
 
 ```sh
-pi install git:github.com/jensilo/pi-activity@v1.0.1
+pi install git:github.com/jensilo/pi-activity
 ```
 
-Then run `/reload` in Pi. Tested with Pi 1.5.0.
+Then run `/reload` in Pi. Tested with Pi 1.6.1.
 
 - Read the source before you install.
 - Install one copy only. Do not also load Activity with `-e` or a symlink.
 - For a Git install, use your normal Git login. Do not put credentials in the URL.
 
-To remove it, use the same source: `pi remove npm:@jensilo/pi-activity@1.0.1` or
-`pi remove git:github.com/jensilo/pi-activity@v1.0.1`.
+To remove it, use the same source: `pi remove npm:@jensilo/pi-activity` or
+`pi remove git:github.com/jensilo/pi-activity`. To pin a release, append its
+version to the source; the [releases](https://github.com/jensilo/pi-activity/releases)
+page lists them.
 
 ## First start
 
@@ -79,11 +81,14 @@ See [UI controls](docs/ui.md).
 
 ## Configuration
 
-Activity reads one file: `~/.pi/agent/config/activity.json`. `PI_CODING_AGENT_DIR`
-changes the agent directory. Activity reads no project configuration, and it
-rejects old classifier, path and prompt-file settings.
+Activity reads `~/.pi/agent/config/activity.json`, then the optional sibling
+`activity.local.json`. `PI_CODING_AGENT_DIR` changes the agent directory for both.
+Nested objects merge; arrays, `null` and other values replace the earlier value.
+The merged settings are validated. Activity reads no project configuration, and
+it rejects old classifier, path and prompt-file settings.
 
-The first start creates a minimal config:
+The first start creates a minimal `activity.json` if missing. It never writes
+`activity.local.json`.
 
 ```json
 {
@@ -108,6 +113,7 @@ settings you want to change:
 | `auto.judgeInstructions` | empty | Your safety guidance for the judge, up to 32 KiB. It cannot change guards. Do not put secrets in it. |
 | `auto.fallbackJudgeModel` | `null` | Optional model on the same backend for technical review failures, not to override a valid final decision. |
 | `auto.judgeThinking`, `auto.fallbackJudgeThinking` | `off`, then inherits judge thinking | Thinking levels for the chat judge and its fallback. Classifier decisions ignore these settings. |
+| `auto.judgeResponseFormat` | `off` | Ask a Chat Completions judge to constrain its verdict: `json_schema` for the exact `decision`/`reason` object, `json_object` for plain JSON. Other APIs — including the OpenAI Responses APIs, which expect a different shape — and the classifier backend skip it. Activity still checks the verdict itself, so this never widens what can authorize a call. |
 | `auto.summaryModel`, `auto.summaryThinking` | by mode | Summaries use chat models. Cascade defaults to the current chat model with `low` thinking. Full mode defaults to the chat judge and its thinking level, or raw history if using a classifier without a summary target. Short mode does not summarize. |
 | `auto.fallbackSummaryModel` | `null` | Optional chat model to try when the summary model fails. In cascade, the current chat model with `low` thinking is also available as a summary fallback. |
 | `guards.readOnly`, `guards.remoteReadOnly` | `false` | `true` keeps the guard on. A session command cannot turn it off. |

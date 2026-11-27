@@ -2,19 +2,19 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { mock } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import activityExtension from "../index.ts";
 import { createManagedEvidenceProvider } from "../evidence-provider.ts";
 import { fixtureIdentity, readyResponse, wireResponse, withNativeTools } from "./nine-head-fixtures.mjs";
+import { makeSocketFixtureRoot } from "./socket-fixture.mjs";
 
 const metadata = ["config.json", "tokenizer.json", "thresholds.json", "heads.json", "model_contract.json"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const root = await realpath(await mkdtemp(join(tmpdir(), "a-md-")));
+const root = await makeSocketFixtureRoot("a-md-");
 const saved = Object.fromEntries(["HOME", "PI_CODING_AGENT_DIR", "PI_SUBAGENT_TASK", "PI_SUBAGENT_POLICY_CONTEXT_FD", "PI_ACTIVITY_AUTO_MODE",
   "ACTIVITY_TEST_CREDENTIAL", "NODE_OPTIONS", "RAYON_NUM_THREADS", "CANDLE_NUM_THREADS"]
   .map((key) => [key, process.env[key]]));

@@ -2,7 +2,7 @@
 
 ## Offline checks
 
-The tests target Pi 1.5.0 and use your installed Pi with jiti. They need no dependency
+The tests target Pi 1.6.1 and use your installed Pi with jiti. They need no dependency
 install, acclass checkout, engine or model download, or live provider.
 
 ```sh
@@ -42,7 +42,7 @@ export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=import"
 | --- | --- |
 | `acclass-setup` | Consent before downloads, HTTPS and size limits, rejection of a wrong installer hash, scratch files, existing installations, cancellation, judge fallback. Fetch and spawn are mocks. |
 | `managed-runtime` | First-start configuration, one question per runtime, no download after decline or without UI, `/reload`, model selection, shutdown cancellation |
-| `config-*`, `standalone` | One global file, ignored local and project files, settings, model lookup, defaults |
+| `config-*`, `standalone` | Personal base and local layers, ignored project files, settings, model lookup, defaults |
 | `review-policy*`, `inline-policy-gate` | Judge instructions, prompt composition, auto mode off keeps guards |
 | Gate, guard, `judge-last` | Native effects and predictions, unknown custom and MCP effects, chat and classifier decisions, classifier-only cascade, cancellation, no-prompt blocks after technical failures, no override of guards |
 | Approval, UI, renderer | Paged dialog, timer, one dialog at a time, resize, keys, unchanged tool rendering, refusal reasons |
@@ -55,7 +55,7 @@ The standalone SDK fixture uses Pi's real model registry and tool sources, a key
 synthetic provider and inert local tools. It checks blocked and cancelled calls,
 provider hooks, storage, reload and branch restore. It uses no real provider or backend.
 
-These tests check behaviour, not model accuracy or speed. Pi 1.5.0 runs top-level tool
+These tests check behaviour, not model accuracy or speed. The tested Pi runs top-level tool
 checks one at a time. The tests do not change this.
 
 ## Optional real inference

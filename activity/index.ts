@@ -28,7 +28,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig, ensureDefaultActivityConfig } from "./config.js";
 import { DEFAULT_ACCLASS, ensureAcclass, type AcclassSettings } from "./acclass-setup.js";
-import { createBlockPresentation, type BlockPresentation } from "./blocked-message.js";
+import { createBlockPresentation, formatBlockedReason, type BlockPresentation, type BlockedGuidanceKind } from "./blocked-message.js";
 import { carryStateFromPreviousSession } from "./carry.js";
 import { judgeSafety, restoreSafetySummaries, clearSafetySummaries, cancelSafetySummaryWork, MAX_RETRIES,
   type ReviewMetadata, type ReviewOptions, type ReviewRetry } from "./judge.js";
@@ -76,6 +76,7 @@ export type ActivityConfig = {
   auto: { judgeModel?: string | null; fallbackJudgeModel?: string | null; summaryModel?: string | null; fallbackSummaryModel?: string | null;
     judgeMode?: ReviewOptions["judgeMode"]; judgeBackend?: ReviewOptions["judgeBackend"]; judgeMaxChars?: number;
     judgeThinking: ModelThinkingLevel; summaryThinking?: ModelThinkingLevel; fallbackJudgeThinking?: ModelThinkingLevel;
+    judgeResponseFormat?: "off" | "json_object" | "json_schema";
     judgeInstructions: string };
   guards: Guards;
   log: LogConfig;
@@ -143,7 +144,7 @@ const state = {
 };
 
 function config(_cwd?: string): ActivityConfig {
-  // One personal snapshot only; never read project or local override files.
+  // Validate the merged personal configuration; never read project files.
   const cfg = structuredClone(loadConfig<ActivityConfig>("activity", DEFAULT_CONFIG));
   for (const key of ["classifier", "trustedTools", "questionnaireSources"]) {
     if (Object.hasOwn(cfg, key)) {
@@ -170,6 +171,9 @@ function config(_cwd?: string): ActivityConfig {
     }
   }
   if (cfg.auto.judgeMode !== undefined && !["short", "full", "cascade"].includes(cfg.auto.judgeMode)) throw new Error("activity.auto.judgeMode must be short, full, or cascade");
+  if (cfg.auto.judgeResponseFormat !== undefined && !["off", "json_object", "json_schema"].includes(cfg.auto.judgeResponseFormat)) {
+    throw new Error("activity.auto.judgeResponseFormat must be off, json_object, or json_schema");
+  }
   if (cfg.auto.judgeMaxChars !== undefined && (!Number.isSafeInteger(cfg.auto.judgeMaxChars) || cfg.auto.judgeMaxChars < 1 || cfg.auto.judgeMaxChars > 768_000)) throw new Error("activity.auto.judgeMaxChars must be between 1 and 768000");
   if (typeof cfg.auto.judgeInstructions !== "string" || Buffer.byteLength(cfg.auto.judgeInstructions, "utf8") > 32 * 1024) {
     throw new Error("activity.auto.judgeInstructions must be a string of at most 32768 UTF-8 bytes");
@@ -307,6 +311,8 @@ interface Evaluation {
   ms: number;
   failure?: string;
   reviewStatus?: "allow" | "deny" | "timeout" | "cancelled" | "unavailable";
+  /** There is a policy objection even though the judge reply cannot be accepted. */
+  reviewedObjection?: boolean;
 }
 
 type ReviewTrace = {
@@ -1037,7 +1043,7 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
       auto.judgeInstructions, auto.judgeMode, auto.judgeMaxChars, judgeBackend(auto), judgeModelRef(auto, ctx),
       auto.fallbackJudgeModel, auto.summaryModel, auto.summaryThinking, auto.fallbackSummaryModel,
       auto.judgeMode === "cascade" ? currentChatModelRef(ctx) : undefined,
-      ...(judgeBackend(auto) === "chat" ? [auto.judgeThinking, auto.fallbackJudgeThinking] : []),
+      ...(judgeBackend(auto) === "chat" ? [auto.judgeThinking, auto.fallbackJudgeThinking, auto.judgeResponseFormat] : []),
     ]);
     const boundConfig = reviewConfigIdentity(cfg.auto);
     const boundContext = contextIdentity();
@@ -1050,13 +1056,24 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
       } catch { return true; }
     };
     let originalJudgeReason: string | undefined;
-    const refusal = (reason: string) => {
+    // Reasons auto mode cannot act on; the block repeats until Activity is configured.
+    const CONFIG_TRIGGERS = new Set(["auto:judge-unconfigured", "auto:classifier-unavailable", "auto:judge-configuration"]);
+    // Carried as structured data with every block so the wording never has to be re-read
+    // out of prose the model may have echoed.
+    const refusalKind = (evaluation: Evaluation): BlockedGuidanceKind =>
+      CONFIG_TRIGGERS.has(evaluation.decision.reason) ? "config"
+        : evaluation.reviewedObjection ? "judged"
+        : evaluation.reviewStatus === "unavailable" || evaluation.reviewStatus === "timeout" || evaluation.reviewStatus === "cancelled" ? "technical"
+        : "judged";
+    const refusal = (reason: string, kind: BlockedGuidanceKind = "judged") => {
       const original = originalJudgeReason?.replace(/[.!?;]+$/, "");
       const preserved = original && !reason.includes(original)
         ? appendReason(originalJudgeReason!, reason) : reason;
-      return `Blocked — tool was not run. ${preserved}\nContinue with a safe alternative that resolves this reason, or other unblocked work; prefer progress when the user is away. Do not bypass guards or retry unchanged. Ask only when no safe path remains.`;
+      return formatBlockedReason(preserved, kind);
     };
-    const staleResult = () => ({ block: true as const, reason: refusal("Tool arguments or policy context changed during review; this call cannot execute.") });
+    const blocked = (reason: string, kind: BlockedGuidanceKind) =>
+      ({ block: true as const, reason: refusal(reason, kind), kind });
+    const staleResult = () => blocked("Tool arguments or policy context changed during review; this call cannot execute.", "technical");
     const trace: ReviewTrace = {
       inputType,
       startedAt: performance.now(),
@@ -1141,7 +1158,7 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
         trace.trigger = "auto:cancelled";
         logDecision(cfg, ctx, tool, event.input, evaluation, "cancelled", trace);
         // No safety reviewer or UI update for cancelled work.
-        return { block: true, reason: blockReason(evaluation) };
+        return { block: true, reason: blockReason(evaluation), kind: "technical" as const };
       }
       if (staleCall()) return staleResult();
       trace.actionEvidence = evaluation.actionEvidence;
@@ -1205,7 +1222,8 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
                 instructionSnapshot: collectInstructionSnapshot(ctx),
                 judgeInstructions,
                 judgeMode: cfg.auto.judgeMode, judgeBackend: backend, judgeMaxChars: cfg.auto.judgeMaxChars,
-                ...(backend === "chat" ? { judgeThinking: cfg.auto.judgeThinking, fallbackJudgeThinking: cfg.auto.fallbackJudgeThinking } : {}),
+                ...(backend === "chat" ? { judgeThinking: cfg.auto.judgeThinking, fallbackJudgeThinking: cfg.auto.fallbackJudgeThinking,
+                  judgeResponseFormat: cfg.auto.judgeResponseFormat } : {}),
                 summaryThinking: cfg.auto.summaryThinking,
                 fallbackSummaryModel: cfg.auto.fallbackSummaryModel ?? undefined,
                 persistSummary: (type, data) => {
@@ -1231,6 +1249,7 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
             if (verdict?.ok && typeof verdict.reason === "string") originalJudgeReason = verdict.reason.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().slice(0, 300);
             const inconsistent = verdict?.ok && verdict.allow && !!guardBlock;
             const technicalStop = !!verdict?.technicalStop || !!judgeMetrics?.configurationError || inconsistent;
+            evaluation.reviewedObjection = inconsistent || verdict?.reviewedObjection === true;
             evaluation.reviewStatus = signal.aborted ? "cancelled"
               : technicalStop || !verdict?.ok ? "unavailable" : verdict.allow ? "allow" : "deny";
             evaluation.failure = signal.aborted ? "safety review cancelled"
@@ -1264,19 +1283,25 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
       const currentGuards = effectiveGuards(config(cwd));
       const modeChanged = (currentGuards.readOnly && !guards.readOnly) || (currentGuards.remoteReadOnly && !guards.remoteReadOnly);
       if (evaluation.decision.verdict === "block" || modeChanged || ctx.signal?.aborted) {
+        // These two decide the wording themselves: the review verdict no longer applies.
+        let kind = refusalKind(evaluation);
         if (modeChanged) {
           evaluation.failure = "safety mode changed; action declined";
           evaluation.decision = { verdict: "block", reason: "auto:mode-changed", guard: "auto" };
           decision = "mode-block";
+          // An active guard is a policy objection, not missing configuration.
+          kind = "judged";
         } else if (ctx.signal?.aborted) {
           evaluation.failure = "turn cancelled; action declined";
           evaluation.decision = { verdict: "block", reason: "auto:cancelled", guard: "auto" };
           decision = "cancelled";
+          // Cancellation judged nothing; retrying the call is legitimate.
+          kind = "technical";
         }
-        const reason = refusal(blockReason(evaluation));
+        const reason = refusal(blockReason(evaluation), kind);
         logDecision(cfg, ctx, tool, event.input, evaluation, decision, trace);
         updateWidget(ctx, receipt.generation);
-        return { block: true, reason };
+        return { block: true, reason, kind };
       }
       if (evaluation.decision.reason === "auto:judge-allow") {
         freezeReviewedInput(event.input);
@@ -1341,11 +1366,11 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
     observe(() => { waitToken = receipt.observations.gateWaitStarted(receipt.scope); });
     checkpoint(ctx);
     try {
-      if (initializing) return presentBlock(event, "Activity initialization is incomplete; retry after session startup.", !signal.aborted && currentInvocation(event, receipt));
+      if (initializing) return presentBlock(event, "Activity initialization is incomplete; retry after session startup.", !signal.aborted && currentInvocation(event, receipt), "technical");
       const cfg = config(ctx.cwd);
-      if (delegatedError) return presentBlock(event, delegatedError, !signal.aborted && currentInvocation(event, receipt));
+      if (delegatedError) return presentBlock(event, delegatedError, !signal.aborted && currentInvocation(event, receipt), "config");
       try { validateDelegatedContext(ctx, delegatedContext); }
-      catch { return presentBlock(event, "Missing, invalid, or stale delegated policy context; restart the delegated task.", !signal.aborted && currentInvocation(event, receipt)); }
+      catch { return presentBlock(event, "Missing, invalid, or stale delegated policy context; restart the delegated task.", !signal.aborted && currentInvocation(event, receipt), "config"); }
       receipt.modes = modes(cfg);
       const info = toolInfo(event.toolName);
       receipt.info = info;
@@ -1370,13 +1395,14 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
           logDecision(cfg, ctx, event.toolName, undefined, { decision: { verdict: "block", reason: "auto:invalid-action-evidence", guard: "auto" },
             source: "action", scope: EMPTY_SCOPE, ms: 0, failure }, "invalid-action-block", trace);
           updateWidget(ctx);
-          return presentBlock(event, failure, !signal.aborted && currentInvocation(event, receipt));
+          return presentBlock(event, failure, !signal.aborted && currentInvocation(event, receipt), "judged");
         }
       }
       observe(() => reviewRecorder.begin(event, ctx, info, cfg.policy.questionnaireSources));
       let result = await gateToolCall(event, gateCtx, cfg, receipt, serializedAction, toolMetadata, codemodeWrapper);
       if ((signal.aborted || !currentInvocation(event, receipt)) && !result?.block) {
-        result = { block: true, reason: "Blocked — tool was not run. Session or turn changed; action declined." };
+        result = { block: true as const, reason: formatBlockedReason("Session or turn changed; action declined.", "technical"),
+          kind: "technical" as const };
         receipt.decision = { ...receipt.decision, verdict: "block", reason: "auto:cancelled", route: "final-block" };
       }
       if (currentInvocation(event, receipt)) {
@@ -1385,7 +1411,7 @@ export default function activityExtension(pi: ExtensionAPI, reviewSafety: typeof
         observe(() => reviewRecorder.decision(event, ctx, result?.block === true));
         updateWidget(ctx);
       }
-      return result?.block ? presentBlock(event, result.reason, !signal.aborted && currentInvocation(event, receipt)) : result;
+      return result?.block ? presentBlock(event, result.reason, !signal.aborted && currentInvocation(event, receipt), result.kind ?? "judged") : result;
     } catch (error) {
       receipt.decision = { verdict: "block", reason: "auto:gate-failure", route: "final-block" };
       if (currentInvocation(event, receipt)) {

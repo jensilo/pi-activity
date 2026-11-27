@@ -61,10 +61,9 @@ and summarizer: ordinary user messages and confirmed questionnaire submissions.
 Agent-authored subagent Task messages retain agent provenance. A confirmed human
 questionnaire submission remains human input even in a delegated session.
 
-`policy.questionnaireSources` is a global-only list of trusted questionnaire extension
-entry-point paths. Its default is empty. To trust a reviewed questionnaire
-package, configure its actual entry point under `policy` in the global activity
-config. This is separate from `policy.trustedTools`, which exempts tool execution
+`policy.questionnaireSources` lists trusted questionnaire extension entry-point
+paths in your personal Activity configuration. Its default is empty. To trust a
+reviewed questionnaire package, configure its actual entry point under `policy`. This is separate from `policy.trustedTools`, which exempts tool execution
 from review; a name-only exemption does not make its output human permission.
 
 The gate verifies the registered tool's user-level source path at call time,

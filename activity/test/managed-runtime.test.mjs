@@ -1,6 +1,6 @@
 // Synthetic managed-runtime wiring only. No engine, installer, provider or network.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import activityExtension, { loadActivityConfig } from "../index.ts";
@@ -8,7 +8,8 @@ import { ensureDefaultActivityConfig } from "../config.ts";
 import { createManagedEvidenceProvider } from "../evidence-provider.ts";
 import { withNativeTools } from "./nine-head-fixtures.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "activity-managed-runtime-"));
+// Setup rejects symlinked ancestors; the OS temp path can itself be a symlink.
+const root = mkdtempSync(join(realpathSync(tmpdir()), "activity-managed-runtime-"));
 const saved = Object.fromEntries(["HOME", "PI_CODING_AGENT_DIR", "PI_SUBAGENT_TASK", "PI_ACTIVITY_AUTO_MODE"].map((key) => [key, process.env[key]]));
 const originalFetch = globalThis.fetch;
 process.env.HOME = root;

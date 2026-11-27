@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import activityExtension from "../index.ts";
+import { blockedGuidance } from "../blocked-message.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "activity-blocked-sdk-"));
 const overrides = { HOME: join(dir, "home"), PI_CODING_AGENT_DIR: dir,
@@ -31,7 +32,8 @@ const notice = "Blocked — tool was not run.";
 // Hard read-only requires a compliant review. An explicitly disabled judge fails
 // closed without dispatching a review request or reading credentials.
 const originalReason = "Safety review unavailable: no classifier judge configured. Set auto.judgeModel to a registered classifier provider/model.";
-const guidance = "Continue with a safe alternative that resolves this reason, or other unblocked work; prefer progress when the user is away. Do not bypass guards or retry unchanged. Ask only when no safe path remains.";
+// No judge is configured, so this block repeats until Activity is configured.
+const guidance = blockedGuidance("config");
 const provider = "blocked-message-sdk-fixture";
 const model = { provider, id: "main", name: "Synthetic blocked message fixture", api: "synthetic-blocked-sdk", baseUrl: "",
   reasoning: false, input: ["text"], contextWindow: 128_000, maxTokens: 512,

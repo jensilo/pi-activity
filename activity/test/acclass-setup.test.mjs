@@ -2,12 +2,12 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { chmod, chown, link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, chown, link, lstat, mkdir, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { lstatSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { makeSocketFixtureRoot } from "./socket-fixture.mjs";
 import {
   ACCLASS_INSTALLER_SHA256, ACCLASS_INSTALLER_URL, ACCLASS_MANIFEST_URL, ACCLASS_VERSION,
   DEFAULT_ACCLASS, createAcclassSetup, verifyInstallation,
@@ -27,7 +27,7 @@ function release() {
       Object.fromEntries(filesFor(variant).map((name) => [name, asset(bytesFor(variant, name), `models/${variant}/${name}`)]))])) };
 }
 async function fixture(t) {
-  const temp = await realpath(await mkdtemp(join(tmpdir(), "a-setup-")));
+  const temp = await makeSocketFixtureRoot("a-setup-");
   t.after(() => rm(temp, { recursive: true, force: true }));
   const home = join(temp, ".acclass");
   const manifest = release();

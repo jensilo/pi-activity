@@ -38,10 +38,12 @@ try {
     "home expansion and loading do not mutate defaults");
 
   write(localPath, { policy: { trustedTools: [], questionnaireSources: ["/synthetic/local.ts"] } });
-  assert.deepEqual(loadActivityConfig(cwd).policy, policy, "activity.local.json cannot override global policy");
-  write(configPath, { policy: { trustedTools: [], questionnaireSources: [] } });
-  assert.deepEqual(loadActivityConfig(cwd).policy, DEFAULT_CONFIG.policy, "empty global lists replace configured trust");
+  assert.deepEqual(loadActivityConfig(cwd).policy, {
+    ...policy, trustedTools: [], questionnaireSources: ["/synthetic/local.ts"],
+  }, "personal policy arrays replace rather than append");
   rmSync(localPath);
+  write(configPath, { policy: { trustedTools: [], questionnaireSources: [] } });
+  assert.deepEqual(loadActivityConfig(cwd).policy, DEFAULT_CONFIG.policy, "empty base lists replace configured trust");
 
   for (const invalid of [null, [], "policy", 42, false]) {
     write(configPath, { policy: invalid });
@@ -59,12 +61,12 @@ try {
     for (const stale of [[], null, ["stale"], "", {}, false]) {
       const message = `activity.${field} is no longer supported; remove it`;
       write(configPath, { ...nested, [field]: stale });
-      // An ignored local nested replacement cannot hide an obsolete global root field.
+      // A local nested replacement cannot hide an obsolete base root field.
       write(localPath, nested);
       assert.throws(() => loadActivityConfig(cwd), { message });
       write(configPath, nested);
       write(localPath, { [field]: stale });
-      assert.deepEqual(loadActivityConfig(cwd).policy, { readAllowlist: [], ...nested.policy }, "ignored local root fields are not parsed or validated");
+      assert.throws(() => loadActivityConfig(cwd), { message }, "obsolete root fields in the local layer are also rejected");
       rmSync(localPath);
     }
   }
@@ -85,7 +87,7 @@ try {
     assert.deepEqual(nested.items, { type: "string", minLength: 1 });
     assert.deepEqual(nested.default, []);
   }
-  console.log("nested policy trust defaults, global-only loading, expansion and stale-root rejection tests passed");
+  console.log("nested policy trust defaults, personal layers, expansion and stale-root rejection tests passed");
 } finally {
   if (savedDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = savedDir;

@@ -25,10 +25,10 @@ try {
   write(join(cwd, ".pi/activity.json"), { classifier: {}, acclass: { enabled: true, variant: "q8" }, guards: { readOnly: false }, auto: { judgeModel: "expensive/current" } });
   const cfg = loadActivityConfig(cwd);
   assert.equal(cfg.auto.judgeModel, "fixture/judge");
-  assert.equal(cfg.auto.summaryModel, undefined, "local config cannot choose a summary model");
+  assert.equal(cfg.auto.summaryModel, "fixture/digest", "the personal override can add a summary model without replacing the judge");
   assert.equal(cfg.guards.readOnly, true);
   assert.equal(cfg.acclass.enabled, false, "project cannot enable the evidence provider");
-  assert.equal(cfg.log.mode, DEFAULT_CONFIG.log.mode, "local logging config is ignored");
+  assert.equal(cfg.log.mode, "redacted", "the personal override also applies to logging settings");
   assert.equal(DEFAULT_CONFIG.acclass.enabled, true, "loading config cannot mutate shared defaults");
   write(join(root, "config/activity.json"), { auto: { judgeModel: null } });
   assert.equal(loadActivityConfig(cwd).auto.judgeModel, null, "explicit null remains a disabled judge, not omission");
@@ -36,19 +36,19 @@ try {
   assert.equal(loadActivityConfig(cwd).auto.judgeModel, undefined, "loading preserves omitted judge selection");
 
   // Personal files do not supply aliases or provider-routed policy to this module.
-  write(join(root, "config/activity.json"), { auto: { modelAliases: { cheap: "fixture/judge" } } });
-  write(join(root, "config/model-policy.json"), { subagentTiers: { openai: { cheap: "fixture/judge" } } });
+  write(join(root, "config/activity.json"), { auto: { modelAliases: { review: "fixture/judge" } } });
+  write(join(root, "config/fixture-routing.json"), { routes: { fixture: { review: "fixture/judge" } } });
   const models = [{ provider: "fixture", id: "judge", contextWindow: 128000 },
     { provider: "fixture", id: "digest", contextWindow: 128000 },
-    { provider: "tiers", id: "cheap", api: "pi-virtual" }];
+    { provider: "fixture-router", id: "review", api: "pi-virtual" }];
   const ctx = { model: { provider: "expensive", id: "current" },
     sessionManager: { getSessionId: () => "model-config", getBranch: () => [] },
     modelRegistry: { getAll: () => models, find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
       getApiKeyAndHeaders: () => { throw new Error("auth must be owned by registry dispatch"); } },
   };
   assert.equal((await resolveModelForCall(ctx, "judge")).model, models[0]);
-  assert.equal((await resolveModelForCall(ctx, "cheap")).model, models[2], "bare tier is only an unambiguous registered id");
-  assert.equal((await resolveModelForCall(ctx, "tiers/cheap", "low")).thinking, "low");
+  assert.equal((await resolveModelForCall(ctx, "review")).model, models[2], "bare tier is only an unambiguous registered id");
+  assert.equal((await resolveModelForCall(ctx, "fixture-router/review", "low")).thinking, "low");
   assert.equal((await resolveModelForCall(ctx, "fixture/judge", "off")).thinking, "off");
   // Every colon stays part of the exact id, including former thinking suffixes.
   for (const suffix of ["off", "minimal", "low", "medium", "high", "xhigh", "max", "HIGH", "unknown", "7b"]) {
@@ -66,9 +66,9 @@ try {
   }
   models.push({ provider: "other", id: "model:high" });
   await assert.rejects(resolveModelForCall(ctx, "model:high"), /Ambiguous/);
-  models.push({ provider: "other", id: "cheap" });
-  await assert.rejects(resolveModelForCall(ctx, "cheap"), /Ambiguous/);
-  await assert.rejects(resolveModelForCall(ctx, "smart"), /Model not found/);
+  models.push({ provider: "other", id: "review" });
+  await assert.rejects(resolveModelForCall(ctx, "review"), /Ambiguous/);
+  await assert.rejects(resolveModelForCall(ctx, "unregistered"), /Model not found/);
   await assert.rejects(resolveModelForCall(ctx, ""), /explicit/);
   let calls = 0;
   const missing = await judgeSafety(ctx, "", "bash", { command: "git push" }, cwd,

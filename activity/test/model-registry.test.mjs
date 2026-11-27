@@ -53,13 +53,13 @@ registry.registerProvider({ id: physical.provider, name: "Offline synthetic prov
   },
 });
 await registry.refresh({ allowNetwork: false, providers: [physical.provider] });
-registry.registerVirtualModel({ provider: "tiers", id: "cheap", name: "Synthetic tier", thinkingLevels: ["off", "low", "high", "max"],
+registry.registerVirtualModel({ provider: "fixture-router", id: "primary", name: "Synthetic tier", thinkingLevels: ["off", "low", "high", "max"],
   route(request) {
     assert.equal(request.reason, "direct", "nested reviews are direct requests, including our logical retries");
     assert.equal(request.thinkingLevel, expectedThinking);
     if (routing === "failure") throw new Error("Synthetic routing failure");
     if (routing === "transient") throw new Error("503 service unavailable during synthetic routing");
-    if (routing === "virtual") return { model: registry.find("tiers", "cheap"), thinkingLevel: "low" };
+    if (routing === "virtual") return { model: registry.find("fixture-router", "primary"), thinkingLevel: "low" };
     return { model: registry.find(physical.provider, physical.id), thinkingLevel: "low" };
   },
 });
@@ -69,7 +69,7 @@ registry.getApiKeyAndHeaders = () => { throw new Error("activity must not pre-re
 const manager = SessionManager.inMemory("/synthetic");
 const ctx = { model: { provider: "irrelevant-chat", id: "expensive" }, modelRegistry: registry, sessionManager: manager };
 const observations = [];
-const verdict = await judgeSafety(ctx, "tiers/cheap", "bash", { command: "git push" }, "/synthetic", AUTO, live,
+const verdict = await judgeSafety(ctx, "fixture-router/primary", "bash", { command: "git push" }, "/synthetic", AUTO, live,
   undefined, undefined, undefined, undefined, undefined, undefined, undefined,
   { judgeThinking: "low", onModelCall: (event) => observations.push(event) });
 assert.equal(verdict.allow, true, verdict.reason);
@@ -88,7 +88,7 @@ for (const kind of ["failure", "virtual", "transient"]) {
   routing = kind;
   const before = dispatched.length;
   const events = [];
-  const failed = await judgeSafety(ctx, "tiers/cheap", "bash", {}, "/synthetic", AUTO, live,
+  const failed = await judgeSafety(ctx, "fixture-router/primary", "bash", {}, "/synthetic", AUTO, live,
     undefined, undefined, undefined, undefined, undefined, undefined, undefined,
     { judgeThinking: "low", onModelCall: (event) => events.push(event) });
   assert.equal(failed.ok, false);
@@ -104,7 +104,7 @@ for (const observer of [
   (event) => { if (event.response) event.response.usage.input = 999999; throw new Error("synthetic observer failure"); },
   async () => { throw new Error("synthetic async observer failure"); },
 ]) {
-  const reviewed = await judgeSafety(ctx, "tiers/cheap", "bash", {}, "/synthetic", AUTO, live,
+  const reviewed = await judgeSafety(ctx, "fixture-router/primary", "bash", {}, "/synthetic", AUTO, live,
     undefined, undefined, undefined, undefined, undefined, undefined, undefined, { judgeThinking: "low", onModelCall: observer });
   assert.equal(reviewed.allow, true, "observations must not change verdicts");
   assert.equal(reviewed.metrics.inputTokens, usage.input, "observed usage is detached from the response");
@@ -114,7 +114,7 @@ for (const observer of [
 for (const thinking of ["off", "high", "max"]) {
   expectedThinking = thinking;
   const before = dispatched.length;
-  const reviewed = await judgeSafety(ctx, "tiers/cheap", "bash", {}, "/synthetic", AUTO, live,
+  const reviewed = await judgeSafety(ctx, "fixture-router/primary", "bash", {}, "/synthetic", AUTO, live,
     undefined, undefined, undefined, undefined, undefined, undefined, undefined, { judgeThinking: thinking });
   assert.equal(reviewed.allow, true, reviewed.reason);
   assert.equal(dispatched.length, before + 1);
@@ -173,7 +173,7 @@ try {
   const cache = new RollingUserSummary();
   const snapshots = [];
   const persist = (customType, data) => { snapshots.push(data); session.appendCustomEntry(customType, data); };
-  const generated = await cache.prepare(context, "tiers/cheap", live, undefined, undefined, undefined, { thinking: "low", persist });
+  const generated = await cache.prepare(context, "fixture-router/primary", live, undefined, undefined, undefined, { thinking: "low", persist });
   assert.equal(generated.metrics.status, "generated");
   assert.equal(generated.metrics.provider, physical.provider);
   assert.equal(generated.summary.text, summaryText, "operational wording is retained exactly");
@@ -194,10 +194,10 @@ try {
   assert.equal(cached.metrics.model, physical.id, "cached metadata names the generator, not new selection");
   assert.equal(dispatched.length, before);
   reopened.appendMessage({ role: "user", content: "Do not push after all", timestamp: Date.now() });
-  const later = await restarted.prepare(context, "tiers/cheap", live, undefined, undefined, undefined, { thinking: "low" });
+  const later = await restarted.prepare(context, "fixture-router/primary", live, undefined, undefined, undefined, { thinking: "low" });
   assert.equal(later.metrics.status, "cached");
   const prompts = [];
-  await judgeSafety(context, "tiers/cheap", "bash", { command: "git push" }, root, { ...AUTO, readOnly: true }, live,
+  await judgeSafety(context, "fixture-router/primary", "bash", { command: "git push" }, root, { ...AUTO, readOnly: true }, live,
     undefined, undefined, async (_model, prompt) => { prompts.push(prompt); return message('{"decision":"block","reason":"read-only is active"}'); },
     undefined, undefined, undefined, undefined, { judgeThinking: "low", persistSummary: (type, data) => reopened.appendCustomEntry(type, data) });
   assert.match(prompts.at(-1).messages[0].content[0].text, /Do not push after all/);
@@ -208,7 +208,7 @@ try {
   restarted.restore(context);
   reopened.appendMessage({ role: "user", content: "Different branch scope", timestamp: Date.now() });
   reopened.appendMessage({ role: "user", content: "Proceed", timestamp: Date.now() });
-  assert.equal((await restarted.prepare(context, "tiers/cheap", live, undefined, undefined, undefined, { thinking: "low" })).metrics.status, "generated");
+  assert.equal((await restarted.prepare(context, "fixture-router/primary", live, undefined, undefined, undefined, { thinking: "low" })).metrics.status, "generated");
   reopened.branch(oldLeaf);
   restarted.restore(context);
   assert.equal((await restarted.prepare(context, "unregistered/model", live)).metrics.status, "cached");
@@ -216,14 +216,14 @@ try {
   for (const promptVersion of [SUMMARY_PROMPT_VERSION - 1, SUMMARY_PROMPT_VERSION + 1]) {
     reopened.appendCustomEntry(SUMMARY_ENTRY_TYPE, { ...snapshots[0], promptVersion });
     restarted.restore(context);
-    assert.equal((await restarted.prepare(context, "tiers/cheap", live, undefined, undefined, undefined, { thinking: "low" })).metrics.status, "generated",
+    assert.equal((await restarted.prepare(context, "fixture-router/primary", live, undefined, undefined, undefined, { thinking: "low" })).metrics.status, "generated",
       "older and newer prompt versions invalidate persisted entries");
   }
 
   const pendingCache = new RollingUserSummary();
   let release;
   let persisted = 0;
-  const pending = pendingCache.prepare(context, "tiers/cheap", live,
+  const pending = pendingCache.prepare(context, "fixture-router/primary", live,
     async () => { await new Promise((done) => { release = done; }); return message(summaryText); },
     undefined, undefined, { thinking: "low", persist: () => { persisted++; } });
   await new Promise((done) => setTimeout(done, 0));

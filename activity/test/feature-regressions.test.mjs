@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import activityExtension from "../index.ts";
-import { judgeSafety } from "../judge.ts";
+import { blockedGuidance } from "../blocked-message.ts";
+import { judgeSafety, MAX_RETRIES } from "../judge.ts";
 import { ActivityObservations, decisionObservation } from "../observations.ts";
 import { OBSERVATION_ENTRY_TYPE } from "../version.ts";
 import { nativeToolInfo, withNativeTools } from "./nine-head-fixtures.mjs";
@@ -110,6 +111,43 @@ try {
   assert.ok(outage.events.every(({ channel }) => channel !== "herdr:blocked"));
   await outage.stop();
 
+  configure({ auto: { judgeBackend: "classifier", judgeModel: "fixture/missing", fallbackJudgeModel: "fixture/fallback" } });
+  let fallbackCalls = 0;
+  const fallback = harness(undefined, {
+    findOfType: (type, provider, id) => id === "fallback" ? { type, provider, id, api: "fixture-choice", contextWindow: 128_000 } : undefined,
+    classify: async () => { fallbackCalls++; throw Object.assign(new Error("synthetic outage"), { status: 503 }); },
+  });
+  await fallback.start();
+  const failedFallback = await fallback.call("catalog", {});
+  assert.equal(fallbackCalls, MAX_RETRIES + 1);
+  assert.equal(failedFallback.result.block, true);
+  assert.equal(failedFallback.decision.judge.configurationError, undefined);
+  assert.ok(failedFallback.result.reason.endsWith(blockedGuidance("technical")));
+  await fallback.stop();
+
+  configure({ auto: { judgeBackend: "chat", judgeMode: "short", judgeModel: "fixture/judge" } });
+  let reply = JSON.stringify({ decision: "block", reason: "This would delete the user's only backup. Read-only mode is active." });
+  const chat = harness(undefined, {
+    find: () => model, getAll: () => [model],
+    streamSimple(selected) {
+      const message = { role: "assistant", provider: selected.provider, model: selected.id, api: selected.api,
+        stopReason: "stop", content: [{ type: "text", text: reply }] };
+      return { async *[Symbol.asyncIterator]() { yield { type: "start", partial: message }; },
+        async result() { return message; } };
+    },
+  });
+  await chat.start();
+  const objection = await chat.call("catalog", {});
+  assert.equal(objection.result.block, true);
+  assert.match(objection.result.reason, /only backup.*cited inactive read-only guard/);
+  assert.ok(objection.result.reason.endsWith(blockedGuidance("judged")));
+  reply = "not JSON";
+  const invalidReply = await chat.call("catalog", {});
+  assert.equal(invalidReply.result.block, true);
+  assert.ok(invalidReply.result.reason.endsWith(blockedGuidance("technical")));
+  await chat.stop();
+
+  configure();
   let deny = false;
   const ordinary = harness(async () => ({ ok: true, allow: !deny, reason: "DO_NOT_BROADCAST_RAW_REASON" }));
   await ordinary.start();
@@ -134,6 +172,7 @@ try {
   const malformed = await ordinary.call("catalog", { invalid: undefined });
   assert.equal(malformed.decision.reason, "auto:invalid-action-evidence");
   assert.equal(malformed.result.block, true);
+  assert.ok(malformed.result.reason.endsWith(blockedGuidance("judged")));
   deny = true;
   ordinary.ctx.mode = "print";
   assert.equal((await ordinary.call("catalog", {})).decision.route, "final-block");

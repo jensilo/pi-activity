@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import activityExtension, { setFixtureProvider } from "./synthetic-runtime.mjs";
 import { judgeSafety } from "../judge.ts";
+import { blockedGuidance } from "../blocked-message.ts";
 import { Classifier } from "../classifier.ts";
 import { classification, facts, createFixtureProvider, withNativeTools } from "./nine-head-fixtures.mjs";
 import { syntheticLauncher } from "./delegation-fixture.mjs";
@@ -66,10 +67,9 @@ async function check(options, run) { const h = await harness(options); try { awa
 const blocked = (result) => assert.equal(result?.block, true, result?.reason);
 const allowed = (result) => assert.notEqual(result?.block, true, result?.reason);
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
-const safeContinuation = "\nContinue with a safe alternative that resolves this reason, or other unblocked work; prefer progress when the user is away. Do not bypass guards or retry unchanged. Ask only when no safe path remains.";
-const assertRefusal = (reason) => {
+const assertRefusal = (reason, kind) => {
   assert.match(reason, /^↑ Blocked — tool was not run\.\n/);
-  assert.ok(reason.endsWith(safeContinuation), "every refusal preserves safe-progress guidance");
+  assert.ok(reason.endsWith(`\n${blockedGuidance(kind)}`), `expected ${kind} guidance`);
 };
 try {
   for (const delegated of [false, true]) for (const auto of [false, true]) {
@@ -211,7 +211,7 @@ try {
   const reason = "Read ACCESS.md before opening the protected fixture";
   await check({ mode: "tui", review: async () => ({ ok: true, allow: false, decision: "block", reason }) }, async (h) => {
     const result = await h.call(h.event()); blocked(result);
-    assert.equal(result.reason, `↑ Blocked — tool was not run.\n🛡️ Blocked (llm): ${reason}.${safeContinuation}`);
+    assert.equal(result.reason, `↑ Blocked — tool was not run.\n🛡️ Blocked (llm): ${reason}.\n${blockedGuidance("judged")}`);
     assert.equal(h.prompts, 0);
   });
   for (const mode of ["tui", "print"]) for (const guards of [{}, { readOnly: true }, { remoteReadOnly: true }]) {
@@ -219,7 +219,7 @@ try {
       const result = await h.call(h.event());
       assert.equal(h.prompts, 0, "block never opens UI");
       blocked(result); assert.ok(result.reason.includes(reason));
-      assertRefusal(result.reason);
+      assertRefusal(result.reason, "judged");
       assert.doesNotMatch(result.reason, /read-only off|be cautious|can't do it/);
     });
   }
@@ -229,10 +229,10 @@ try {
     const result = await h.call(h.event()); blocked(result);
     assert.match(result.reason, /Safety review unavailable/);
     assert.ok(result.reason.includes(reason));
+    assertRefusal(result.reason, "technical");
     assert.doesNotMatch(result.reason, /approval|declined by user/i);
     assert.equal(h.executed, 0);
     assert.equal(h.prompts, 0);
-    assertRefusal(result.reason);
   });
   // Independent nested admissions overlap; cancelling one cannot stop its sibling.
   const bothStarted = deferred(), finishSibling = deferred(); let concurrent = 0;
